@@ -197,6 +197,13 @@ impl<'a> App<'a> {
                     self.open_file_picker();
                 }
             }
+            KeyCode::Char('r') => {
+                match self.view {
+                    View::Objects => self.load_objects(terminal).await?,
+                    View::Buckets => self.load_buckets(terminal).await?,
+                    _ => {}
+                }
+            }
             _ => {}
         }
         Ok(())
