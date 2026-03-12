@@ -2,13 +2,14 @@
 
 A terminal UI file browser for Amazon S3, built with [ratatui](https://ratatui.rs).
 
-Browse your S3 buckets and objects, preview text files inline, and download binary files — all from the terminal.
+Browse your S3 buckets and objects, preview and edit text files inline, and download binary files — all from the terminal.
 
 ## Features
 
 - **Browse buckets and objects** with a familiar file-manager interface
 - **Drill into folders** with stack-based prefix navigation
 - **Preview text files** (json, yaml, xml, csv, markdown, source code, and many more) directly in the terminal with line numbers and scrolling
+- **Edit text files** with a built-in editor and save back to S3 (`Ctrl+S`)
 - **Download binary files** to a local directory (defaults to `~/Downloads`)
 - **Vim-style keybindings** alongside arrow keys
 - **S3-compatible** — works with AWS S3, MinIO, LocalStack, and other S3-compatible services via `--endpoint-url`
@@ -67,7 +68,15 @@ ts3 --endpoint-url http://localhost:9000
 | `d` / `PgDn`    | Page down       |
 | `u` / `PgUp`    | Page up         |
 | `g`              | Jump to top     |
+| `e`              | Edit file       |
 | `q` / `Esc` / `h`| Back to list   |
+
+### Editing
+
+| Key              | Action          |
+|------------------|-----------------|
+| `Ctrl+S`         | Save to S3      |
+| `Esc`            | Cancel editing  |
 
 ### Download Prompt
 

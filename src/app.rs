@@ -1,8 +1,9 @@
 use aws_sdk_s3::Client;
 use color_eyre::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::DefaultTerminal;
 use ratatui::widgets::ListState;
+use tui_textarea::TextArea;
 
 use crate::s3::{self, S3Entry};
 use crate::ui;
@@ -12,10 +13,11 @@ pub enum View {
     Buckets,
     Objects,
     FilePreview,
+    FileEdit,
     DownloadPrompt,
 }
 
-pub struct App {
+pub struct App<'a> {
     pub client: Client,
     pub should_exit: bool,
     pub view: View,
@@ -31,13 +33,18 @@ pub struct App {
     pub preview_content: String,
     pub preview_name: String,
     pub preview_scroll: u16,
+    // File edit state
+    pub editor: TextArea<'a>,
+    pub editor_key: String,
+    pub editor_name: String,
+    pub editor_modified: bool,
     // Download prompt state
     pub download_input: String,
     pub download_key: String,
     pub download_name: String,
 }
 
-impl App {
+impl<'a> App<'a> {
     pub fn new(client: Client, initial_bucket: Option<String>) -> Self {
         Self {
             client,
@@ -54,6 +61,10 @@ impl App {
             preview_content: String::new(),
             preview_name: String::new(),
             preview_scroll: 0,
+            editor: TextArea::default(),
+            editor_key: String::new(),
+            editor_name: String::new(),
+            editor_modified: false,
             download_input: String::new(),
             download_key: String::new(),
             download_name: String::new(),
@@ -92,7 +103,7 @@ impl App {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                self.handle_key(key.code, &mut terminal).await?;
+                self.handle_key(key, &mut terminal).await?;
             }
         }
 
@@ -101,15 +112,16 @@ impl App {
 
     async fn handle_key(
         &mut self,
-        code: KeyCode,
+        key: KeyEvent,
         terminal: &mut DefaultTerminal,
     ) -> Result<()> {
         match self.view {
-            View::FilePreview => self.handle_preview_key(code),
-            View::DownloadPrompt => self.handle_download_key(code, terminal).await?,
+            View::FilePreview => self.handle_preview_key(key.code),
+            View::FileEdit => self.handle_edit_key(key, terminal).await?,
+            View::DownloadPrompt => self.handle_download_key(key.code, terminal).await?,
             _ => {
                 self.error = None;
-                self.handle_list_key(code, terminal).await?;
+                self.handle_list_key(key.code, terminal).await?;
             }
         }
         Ok(())
@@ -139,6 +151,9 @@ impl App {
 
     fn handle_preview_key(&mut self, code: KeyCode) {
         match code {
+            KeyCode::Char('e') => {
+                self.open_editor_from_preview();
+            }
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => {
                 self.view = View::Objects;
                 self.preview_content.clear();
@@ -161,6 +176,66 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    async fn handle_edit_key(
+        &mut self,
+        key: KeyEvent,
+        terminal: &mut DefaultTerminal,
+    ) -> Result<()> {
+        // Ctrl+S to save
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+            self.save_editor(terminal).await?;
+            return Ok(());
+        }
+        // Esc to cancel
+        if key.code == KeyCode::Esc {
+            self.close_editor();
+            return Ok(());
+        }
+        // Forward everything else to the textarea
+        self.editor.input(key);
+        self.editor_modified = true;
+        Ok(())
+    }
+
+    async fn save_editor(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let content = self.editor.lines().join("\n");
+        let key = self.editor_key.clone();
+
+        self.loading = true;
+        terminal.draw(|frame| ui::draw(frame, self))?;
+
+        match s3::put_object(&self.client, &self.current_bucket, &key, &content).await {
+            Ok(()) => {
+                self.error = Some(format!("Saved {}", self.editor_name));
+                self.editor_modified = false;
+                // Update preview content and go back to preview
+                self.preview_content = content;
+                self.preview_scroll = 0;
+                self.view = View::FilePreview;
+            }
+            Err(e) => {
+                self.error = Some(e);
+            }
+        }
+        self.loading = false;
+        Ok(())
+    }
+
+    fn close_editor(&mut self) {
+        // Go back to preview with original content
+        self.preview_scroll = 0;
+        self.view = View::FilePreview;
+    }
+
+    fn open_editor_from_preview(&mut self) {
+        let lines: Vec<String> = self.preview_content.lines().map(String::from).collect();
+        self.editor = TextArea::new(if lines.is_empty() { vec![String::new()] } else { lines });
+        self.editor_key = format!("{}{}", self.current_prefix(), self.preview_name);
+        self.editor_name = self.preview_name.clone();
+        self.editor_modified = false;
+        self.view = View::FileEdit;
     }
 
     async fn handle_download_key(
@@ -192,7 +267,6 @@ impl App {
                     Ok(()) => {
                         self.error = None;
                         self.download_input.clear();
-                        // Show success briefly via error field (green would be nice but reuse is fine)
                         self.error = Some(format!("Downloaded to {}", dest.display()));
                     }
                     Err(e) => self.error = Some(e),

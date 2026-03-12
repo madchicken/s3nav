@@ -8,6 +8,7 @@ use ratatui::widgets::{
 };
 
 use crate::app::{App, View};
+use crate::s3;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let [header_area, main_area, footer_area] = Layout::vertical([
@@ -21,10 +22,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     match &app.view {
         View::FilePreview => draw_preview(frame, app, main_area),
-        View::DownloadPrompt => {
-            draw_list(frame, app, main_area);
-            // Draw download prompt as overlay on footer
-        }
+        View::FileEdit => draw_editor(frame, app, main_area),
+        View::DownloadPrompt => draw_list(frame, app, main_area),
         _ => draw_list(frame, app, main_area),
     }
 
@@ -44,6 +43,10 @@ fn draw_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         }
         View::FilePreview => {
             format!(" {}", app.preview_name)
+        }
+        View::FileEdit => {
+            let modified = if app.editor_modified { " [modified]" } else { "" };
+            format!(" EDITING: {}{}", app.editor_name, modified)
         }
     };
 
@@ -119,8 +122,6 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     StatefulWidget::render(list, area, frame.buffer_mut(), &mut app.list_state);
 }
 
-use crate::s3;
-
 fn draw_preview(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -158,6 +159,19 @@ fn draw_preview(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
 }
 
+fn draw_editor(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    app.editor.set_block(block);
+    app.editor.set_line_number_style(Style::default().fg(Color::DarkGray));
+    app.editor.set_cursor_line_style(Style::default());
+    app.editor.set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+
+    frame.render_widget(&app.editor, area);
+}
+
 fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     if app.view == View::DownloadPrompt {
         let prompt = Paragraph::new(Line::from(vec![
@@ -176,7 +190,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
 
     if let Some(msg) = &app.error {
-        let is_success = msg.starts_with("Downloaded to");
+        let is_success = msg.starts_with("Downloaded to") || msg.starts_with("Saved ");
         let color = if is_success { Color::Green } else { Color::Red };
         let label = if is_success { " OK: " } else { " ERROR: " };
         let line = Paragraph::new(Line::from(vec![
@@ -195,8 +209,16 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(" page  "),
             Span::styled("g", Style::default().fg(Color::Cyan)),
             Span::raw(" top  "),
+            Span::styled("e", Style::default().fg(Color::Cyan)),
+            Span::raw(" edit  "),
             Span::styled("q/Esc/h", Style::default().fg(Color::Cyan)),
             Span::raw(" back"),
+        ])),
+        View::FileEdit => Paragraph::new(Line::from(vec![
+            Span::styled(" Ctrl+S", Style::default().fg(Color::Cyan)),
+            Span::raw(" save  "),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" cancel"),
         ])),
         _ => Paragraph::new(Line::from(vec![
             Span::styled(" ↑↓/jk", Style::default().fg(Color::Cyan)),

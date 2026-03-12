@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use aws_sdk_s3::Client;
+use aws_sdk_s3::primitives::ByteStream;
 
 use crate::Args;
 
@@ -131,6 +132,24 @@ pub async fn download_object(
 ) -> Result<(), String> {
     let bytes = get_object_bytes(client, bucket, key).await?;
     std::fs::write(dest, &bytes).map_err(|e| format!("Failed to write file: {e}"))?;
+    Ok(())
+}
+
+pub async fn put_object(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    content: &str,
+) -> Result<(), String> {
+    client
+        .put_object()
+        .bucket(bucket)
+        .key(key)
+        .body(ByteStream::from(content.as_bytes().to_vec()))
+        .content_type("text/plain; charset=utf-8")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to upload object: {e}"))?;
     Ok(())
 }
 
