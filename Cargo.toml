@@ -1,0 +1,15 @@
+[package]
+name = "ts3"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aws-config = "1"
+aws-sdk-s3 = "1"
+clap = { version = "4", features = ["derive"] }
+color-eyre = "0.6"
+crossterm = "0.28"
+dirs = "6"
+ratatui = "0.29"
+shellexpand = "3"
+tokio = { version = "1", features = ["full"] }
