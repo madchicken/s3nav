@@ -153,6 +153,56 @@ pub async fn put_object(
     Ok(())
 }
 
+pub async fn delete_object(client: &Client, bucket: &str, key: &str) -> Result<(), String> {
+    client
+        .delete_object()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to delete object: {e}"))?;
+    Ok(())
+}
+
+/// Recursively delete all objects under a prefix (i.e. a "folder").
+pub async fn delete_prefix(client: &Client, bucket: &str, prefix: &str) -> Result<u32, String> {
+    let mut deleted = 0u32;
+    let mut continuation_token: Option<String> = None;
+
+    loop {
+        let mut req = client.list_objects_v2().bucket(bucket).prefix(prefix);
+        if let Some(token) = continuation_token {
+            req = req.continuation_token(token);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("Failed to list objects for deletion: {e}"))?;
+
+        for obj in resp.contents() {
+            if let Some(key) = obj.key() {
+                client
+                    .delete_object()
+                    .bucket(bucket)
+                    .key(key)
+                    .send()
+                    .await
+                    .map_err(|e| format!("Failed to delete {key}: {e}"))?;
+                deleted += 1;
+            }
+        }
+
+        if resp.is_truncated() == Some(true) {
+            continuation_token = resp.next_continuation_token().map(String::from);
+        } else {
+            break;
+        }
+    }
+
+    Ok(deleted)
+}
+
 const TEXT_EXTENSIONS: &[&str] = &[
     "txt", "json", "yaml", "yml", "xml", "csv", "tsv", "md", "markdown",
     "html", "htm", "css", "js", "ts", "jsx", "tsx", "py", "rb", "rs",

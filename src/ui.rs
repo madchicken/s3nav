@@ -23,7 +23,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     match &app.view {
         View::FilePreview => draw_preview(frame, app, main_area),
         View::FileEdit => draw_editor(frame, app, main_area),
-        View::DownloadPrompt => draw_list(frame, app, main_area),
+        View::DownloadPrompt | View::DeleteConfirm => draw_list(frame, app, main_area),
         _ => draw_list(frame, app, main_area),
     }
 
@@ -33,7 +33,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let title = match &app.view {
         View::Buckets => " S3 Buckets".to_string(),
-        View::Objects | View::DownloadPrompt => {
+        View::Objects | View::DownloadPrompt | View::DeleteConfirm => {
             let prefix = app.current_prefix();
             if prefix.is_empty() {
                 format!(" s3://{}", app.current_bucket)
@@ -76,7 +76,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
                 ]))
             })
             .collect(),
-        View::Objects | View::DownloadPrompt => app
+        View::Objects | View::DownloadPrompt | View::DeleteConfirm => app
             .entries
             .iter()
             .map(|entry| {
@@ -173,6 +173,22 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    if app.view == View::DeleteConfirm {
+        let kind = if app.delete_is_dir { "folder" } else { "file" };
+        let prompt = Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" Delete {kind} \"{}\"? ", app.delete_target_name),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("y", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::raw(" confirm  "),
+            Span::styled("any key", Style::default().fg(Color::Cyan)),
+            Span::raw(" cancel"),
+        ]));
+        frame.render_widget(prompt, area);
+        return;
+    }
+
     if app.view == View::DownloadPrompt {
         let prompt = Paragraph::new(Line::from(vec![
             Span::styled(" Save to: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
@@ -190,7 +206,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
 
     if let Some(msg) = &app.error {
-        let is_success = msg.starts_with("Downloaded to") || msg.starts_with("Saved ");
+        let is_success = msg.starts_with("Downloaded to") || msg.starts_with("Saved ") || msg.starts_with("Deleted ");
         let color = if is_success { Color::Green } else { Color::Red };
         let label = if is_success { " OK: " } else { " ERROR: " };
         let line = Paragraph::new(Line::from(vec![
@@ -219,6 +235,18 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(" save  "),
             Span::styled("Esc", Style::default().fg(Color::Cyan)),
             Span::raw(" cancel"),
+        ])),
+        View::Objects => Paragraph::new(Line::from(vec![
+            Span::styled(" ↑↓/jk", Style::default().fg(Color::Cyan)),
+            Span::raw(" navigate  "),
+            Span::styled("Enter/l", Style::default().fg(Color::Cyan)),
+            Span::raw(" open  "),
+            Span::styled("d", Style::default().fg(Color::Cyan)),
+            Span::raw(" delete  "),
+            Span::styled("Backspace/h", Style::default().fg(Color::Cyan)),
+            Span::raw(" back  "),
+            Span::styled("q/Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" quit"),
         ])),
         _ => Paragraph::new(Line::from(vec![
             Span::styled(" ↑↓/jk", Style::default().fg(Color::Cyan)),

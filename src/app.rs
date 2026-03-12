@@ -15,6 +15,7 @@ pub enum View {
     FilePreview,
     FileEdit,
     DownloadPrompt,
+    DeleteConfirm,
 }
 
 pub struct App<'a> {
@@ -42,6 +43,10 @@ pub struct App<'a> {
     pub download_input: String,
     pub download_key: String,
     pub download_name: String,
+    // Delete confirm state
+    pub delete_target_name: String,
+    pub delete_target_key: String,
+    pub delete_is_dir: bool,
 }
 
 impl<'a> App<'a> {
@@ -68,6 +73,9 @@ impl<'a> App<'a> {
             download_input: String::new(),
             download_key: String::new(),
             download_name: String::new(),
+            delete_target_name: String::new(),
+            delete_target_key: String::new(),
+            delete_is_dir: false,
         }
     }
 
@@ -119,6 +127,7 @@ impl<'a> App<'a> {
             View::FilePreview => self.handle_preview_key(key.code),
             View::FileEdit => self.handle_edit_key(key, terminal).await?,
             View::DownloadPrompt => self.handle_download_key(key.code, terminal).await?,
+            View::DeleteConfirm => self.handle_delete_confirm_key(key.code, terminal).await?,
             _ => {
                 self.error = None;
                 self.handle_list_key(key.code, terminal).await?;
@@ -143,6 +152,9 @@ impl<'a> App<'a> {
             }
             KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => {
                 self.go_back(terminal).await?;
+            }
+            KeyCode::Char('d') | KeyCode::Delete => {
+                self.prompt_delete();
             }
             _ => {}
         }
@@ -386,6 +398,73 @@ impl<'a> App<'a> {
         self.download_name = name;
         self.download_input.clear();
         self.view = View::DownloadPrompt;
+    }
+
+    fn prompt_delete(&mut self) {
+        if self.view != View::Objects {
+            return;
+        }
+        let selected = match self.list_state.selected() {
+            Some(i) => i,
+            None => return,
+        };
+        if selected >= self.entries.len() {
+            return;
+        }
+        let entry = &self.entries[selected];
+        self.delete_target_name = entry.name.clone();
+        self.delete_is_dir = entry.is_dir;
+        self.delete_target_key = if entry.is_dir {
+            format!("{}{}/", self.current_prefix(), entry.name)
+        } else {
+            format!("{}{}", self.current_prefix(), entry.name)
+        };
+        self.view = View::DeleteConfirm;
+    }
+
+    async fn handle_delete_confirm_key(
+        &mut self,
+        code: KeyCode,
+        terminal: &mut DefaultTerminal,
+    ) -> Result<()> {
+        match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.loading = true;
+                self.view = View::Objects;
+                terminal.draw(|frame| ui::draw(frame, self))?;
+
+                let key = self.delete_target_key.clone();
+                let name = self.delete_target_name.clone();
+
+                let result = if self.delete_is_dir {
+                    match s3::delete_prefix(&self.client, &self.current_bucket, &key).await {
+                        Ok(count) => Ok(format!("Deleted {name}/ ({count} objects)")),
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    match s3::delete_object(&self.client, &self.current_bucket, &key).await {
+                        Ok(()) => Ok(format!("Deleted {name}")),
+                        Err(e) => Err(e),
+                    }
+                };
+
+                match result {
+                    Ok(msg) => {
+                        self.error = Some(msg);
+                        self.load_objects(terminal).await?;
+                    }
+                    Err(e) => {
+                        self.error = Some(e);
+                        self.loading = false;
+                    }
+                }
+            }
+            _ => {
+                // Any other key cancels
+                self.view = View::Objects;
+            }
+        }
+        Ok(())
     }
 
     async fn go_back(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
