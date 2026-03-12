@@ -16,6 +16,7 @@ pub enum View {
     FileEdit,
     DownloadPrompt,
     DeleteConfirm,
+    CreateFolder,
 }
 
 pub struct App<'a> {
@@ -47,6 +48,8 @@ pub struct App<'a> {
     pub delete_target_name: String,
     pub delete_target_key: String,
     pub delete_is_dir: bool,
+    // Create folder state
+    pub new_folder_input: String,
 }
 
 impl<'a> App<'a> {
@@ -76,6 +79,7 @@ impl<'a> App<'a> {
             delete_target_name: String::new(),
             delete_target_key: String::new(),
             delete_is_dir: false,
+            new_folder_input: String::new(),
         }
     }
 
@@ -128,6 +132,7 @@ impl<'a> App<'a> {
             View::FileEdit => self.handle_edit_key(key, terminal).await?,
             View::DownloadPrompt => self.handle_download_key(key.code, terminal).await?,
             View::DeleteConfirm => self.handle_delete_confirm_key(key.code, terminal).await?,
+            View::CreateFolder => self.handle_create_folder_key(key.code, terminal).await?,
             _ => {
                 self.error = None;
                 self.handle_list_key(key.code, terminal).await?;
@@ -155,6 +160,12 @@ impl<'a> App<'a> {
             }
             KeyCode::Char('d') | KeyCode::Delete => {
                 self.prompt_delete();
+            }
+            KeyCode::Char('n') => {
+                if self.view == View::Objects {
+                    self.new_folder_input.clear();
+                    self.view = View::CreateFolder;
+                }
             }
             _ => {}
         }
@@ -463,6 +474,51 @@ impl<'a> App<'a> {
                 // Any other key cancels
                 self.view = View::Objects;
             }
+        }
+        Ok(())
+    }
+
+    async fn handle_create_folder_key(
+        &mut self,
+        code: KeyCode,
+        terminal: &mut DefaultTerminal,
+    ) -> Result<()> {
+        match code {
+            KeyCode::Esc => {
+                self.view = View::Objects;
+                self.new_folder_input.clear();
+            }
+            KeyCode::Enter => {
+                let name = self.new_folder_input.trim().to_string();
+                if name.is_empty() {
+                    self.view = View::Objects;
+                    return Ok(());
+                }
+                let key = format!("{}{}/", self.current_prefix(), name);
+
+                self.loading = true;
+                self.view = View::Objects;
+                terminal.draw(|frame| ui::draw(frame, self))?;
+
+                match s3::put_object(&self.client, &self.current_bucket, &key, "").await {
+                    Ok(()) => {
+                        self.error = Some(format!("Created folder {name}/"));
+                        self.new_folder_input.clear();
+                        self.load_objects(terminal).await?;
+                    }
+                    Err(e) => {
+                        self.error = Some(e);
+                        self.loading = false;
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                self.new_folder_input.pop();
+            }
+            KeyCode::Char(c) => {
+                self.new_folder_input.push(c);
+            }
+            _ => {}
         }
         Ok(())
     }

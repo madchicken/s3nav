@@ -70,6 +70,9 @@ pub async fn list_objects(
                         name: name.to_string(),
                         is_dir: true,
                         size: 0,
+                        last_modified: None,
+                        storage_class: None,
+                        e_tag: None,
                     });
                 }
             }
@@ -81,10 +84,22 @@ pub async fn list_objects(
                 let name = key.strip_prefix(prefix).unwrap_or(key);
                 // Skip the prefix itself (shows up as empty string)
                 if !name.is_empty() && !name.ends_with('/') {
+                    let last_modified = obj.last_modified().map(|dt| {
+                        dt.fmt(aws_sdk_s3::primitives::DateTimeFormat::DateTime)
+                            .unwrap_or_default()
+                    });
+                    let storage_class = obj
+                        .storage_class()
+                        .map(|sc| sc.as_str().to_string());
+                    let e_tag = obj.e_tag().map(|s| s.trim_matches('"').to_string());
+
                     entries.push(S3Entry {
                         name: name.to_string(),
                         is_dir: false,
                         size: obj.size().unwrap_or(0),
+                        last_modified,
+                        storage_class,
+                        e_tag,
                     });
                 }
             }
@@ -240,4 +255,7 @@ pub struct S3Entry {
     pub name: String,
     pub is_dir: bool,
     pub size: i64,
+    pub last_modified: Option<String>,
+    pub storage_class: Option<String>,
+    pub e_tag: Option<String>,
 }

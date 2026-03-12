@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -23,7 +23,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     match &app.view {
         View::FilePreview => draw_preview(frame, app, main_area),
         View::FileEdit => draw_editor(frame, app, main_area),
-        View::DownloadPrompt | View::DeleteConfirm => draw_list(frame, app, main_area),
+        View::Objects | View::DownloadPrompt | View::DeleteConfirm | View::CreateFolder => {
+            let [list_area, detail_area] = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Fill(1), Constraint::Length(40)])
+                .areas(main_area);
+            draw_list(frame, app, list_area);
+            draw_detail_panel(frame, app, detail_area);
+        }
         _ => draw_list(frame, app, main_area),
     }
 
@@ -33,7 +40,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let title = match &app.view {
         View::Buckets => " S3 Buckets".to_string(),
-        View::Objects | View::DownloadPrompt | View::DeleteConfirm => {
+        View::Objects | View::DownloadPrompt | View::DeleteConfirm | View::CreateFolder => {
             let prefix = app.current_prefix();
             if prefix.is_empty() {
                 format!(" s3://{}", app.current_bucket)
@@ -76,7 +83,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
                 ]))
             })
             .collect(),
-        View::Objects | View::DownloadPrompt | View::DeleteConfirm => app
+        View::Objects | View::DownloadPrompt | View::DeleteConfirm | View::CreateFolder => app
             .entries
             .iter()
             .map(|entry| {
@@ -172,6 +179,94 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     frame.render_widget(&app.editor, area);
 }
 
+fn draw_detail_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Span::styled(" Details ", Style::default().fg(Color::Cyan)));
+
+    let selected = app.list_state.selected();
+    let entry = selected.and_then(|i| app.entries.get(i));
+
+    let lines = match entry {
+        Some(entry) => {
+            let mut lines = vec![
+                Line::from(vec![
+                    Span::styled("Name: ", Style::default().fg(Color::Cyan)),
+                    Span::raw(&entry.name),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Type: ", Style::default().fg(Color::Cyan)),
+                    Span::raw(if entry.is_dir { "Folder" } else { "File" }),
+                ]),
+            ];
+
+            if !entry.is_dir {
+                lines.push(Line::from(vec![
+                    Span::styled("Size: ", Style::default().fg(Color::Cyan)),
+                    Span::raw(format_size(entry.size)),
+                ]));
+            }
+
+            if let Some(modified) = &entry.last_modified {
+                // Format: "2024-01-15T10:30:00Z" -> "2024-01-15 10:30:00"
+                let display = modified
+                    .replace('T', " ")
+                    .trim_end_matches('Z')
+                    .to_string();
+                lines.push(Line::from(vec![
+                    Span::styled("Modified: ", Style::default().fg(Color::Cyan)),
+                    Span::raw(display),
+                ]));
+            }
+
+            if let Some(class) = &entry.storage_class {
+                lines.push(Line::from(vec![
+                    Span::styled("Storage: ", Style::default().fg(Color::Cyan)),
+                    Span::raw(class),
+                ]));
+            }
+
+            if let Some(etag) = &entry.e_tag {
+                lines.push(Line::from(vec![
+                    Span::styled("ETag: ", Style::default().fg(Color::Cyan)),
+                    Span::raw(etag),
+                ]));
+            }
+
+            lines.push(Line::from(""));
+
+            let full_key = if entry.is_dir {
+                format!("s3://{}/{}{}/", app.current_bucket, app.current_prefix(), entry.name)
+            } else {
+                format!("s3://{}/{}{}", app.current_bucket, app.current_prefix(), entry.name)
+            };
+            lines.push(Line::from(vec![
+                Span::styled("Path: ", Style::default().fg(Color::Cyan)),
+            ]));
+            lines.push(Line::from(Span::styled(
+                full_key,
+                Style::default().fg(Color::DarkGray),
+            )));
+
+            lines
+        }
+        None => {
+            vec![Line::from(Span::styled(
+                "No item selected",
+                Style::default().fg(Color::DarkGray),
+            ))]
+        }
+    };
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
+
+    frame.render_widget(paragraph, area);
+}
+
 fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     if app.view == View::DeleteConfirm {
         let kind = if app.delete_is_dir { "folder" } else { "file" };
@@ -183,6 +278,21 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::styled("y", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
             Span::raw(" confirm  "),
             Span::styled("any key", Style::default().fg(Color::Cyan)),
+            Span::raw(" cancel"),
+        ]));
+        frame.render_widget(prompt, area);
+        return;
+    }
+
+    if app.view == View::CreateFolder {
+        let prompt = Paragraph::new(Line::from(vec![
+            Span::styled(" New folder: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw(&app.new_folder_input),
+            Span::styled("█", Style::default().fg(Color::White)),
+            Span::raw("  "),
+            Span::styled("Enter", Style::default().fg(Color::Cyan)),
+            Span::raw(" create  "),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
             Span::raw(" cancel"),
         ]));
         frame.render_widget(prompt, area);
@@ -206,7 +316,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
 
     if let Some(msg) = &app.error {
-        let is_success = msg.starts_with("Downloaded to") || msg.starts_with("Saved ") || msg.starts_with("Deleted ");
+        let is_success = msg.starts_with("Downloaded to") || msg.starts_with("Saved ") || msg.starts_with("Deleted ") || msg.starts_with("Created ");
         let color = if is_success { Color::Green } else { Color::Red };
         let label = if is_success { " OK: " } else { " ERROR: " };
         let line = Paragraph::new(Line::from(vec![
@@ -241,11 +351,13 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(" navigate  "),
             Span::styled("Enter/l", Style::default().fg(Color::Cyan)),
             Span::raw(" open  "),
+            Span::styled("n", Style::default().fg(Color::Cyan)),
+            Span::raw(" new folder  "),
             Span::styled("d", Style::default().fg(Color::Cyan)),
             Span::raw(" delete  "),
-            Span::styled("Backspace/h", Style::default().fg(Color::Cyan)),
+            Span::styled("h", Style::default().fg(Color::Cyan)),
             Span::raw(" back  "),
-            Span::styled("q/Esc", Style::default().fg(Color::Cyan)),
+            Span::styled("q", Style::default().fg(Color::Cyan)),
             Span::raw(" quit"),
         ])),
         _ => Paragraph::new(Line::from(vec![
