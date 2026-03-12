@@ -143,11 +143,7 @@ impl<'a> App<'a> {
         Ok(())
     }
 
-    async fn handle_key(
-        &mut self,
-        key: KeyEvent,
-        terminal: &mut DefaultTerminal,
-    ) -> Result<()> {
+    async fn handle_key(&mut self, key: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
         match self.view {
             View::FilePreview => self.handle_preview_key(key.code),
             View::FileEdit => self.handle_edit_key(key, terminal).await?,
@@ -211,7 +207,11 @@ impl<'a> App<'a> {
             KeyCode::Char('e') => {
                 self.open_editor_from_preview();
             }
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => {
+            KeyCode::Char('q')
+            | KeyCode::Esc
+            | KeyCode::Backspace
+            | KeyCode::Left
+            | KeyCode::Char('h') => {
                 self.view = View::Objects;
                 self.preview_content.clear();
                 self.preview_scroll = 0;
@@ -289,7 +289,11 @@ impl<'a> App<'a> {
 
     fn open_editor_from_preview(&mut self) {
         let lines: Vec<String> = self.preview_content.lines().map(String::from).collect();
-        self.editor = TextArea::new(if lines.is_empty() { vec![String::new()] } else { lines });
+        self.editor = TextArea::new(if lines.is_empty() {
+            vec![String::new()]
+        } else {
+            lines
+        });
         self.editor_key = format!("{}{}", self.current_prefix(), self.preview_name);
         self.editor_name = self.preview_name.clone();
         self.editor_modified = false;
@@ -399,8 +403,7 @@ impl<'a> App<'a> {
                 }
                 let entry = self.entries[selected].clone();
                 if entry.is_dir {
-                    let new_prefix =
-                        format!("{}{}/", self.current_prefix(), entry.name);
+                    let new_prefix = format!("{}{}/", self.current_prefix(), entry.name);
                     self.prefix_stack.push(new_prefix);
                     self.load_objects(terminal).await?;
                 } else {
@@ -633,7 +636,11 @@ impl<'a> App<'a> {
                 }
             }
         }
-        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+        entries.sort_by(|a, b| {
+            b.is_dir
+                .cmp(&a.is_dir)
+                .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
         self.picker_entries = entries;
         if self.picker_entries.is_empty() {
             self.picker_state.select(None);
@@ -682,37 +689,37 @@ impl<'a> App<'a> {
                 }
             }
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                if let Some(idx) = self.picker_state.selected() {
-                    if idx < self.picker_entries.len() {
-                        let entry = self.picker_entries[idx].clone();
-                        if entry.is_dir {
-                            self.picker_dir = self.picker_dir.join(&entry.name);
-                            self.refresh_picker();
-                        } else {
-                            // Upload the selected file
-                            let local_path = self.picker_dir.join(&entry.name);
-                            let s3_key = format!("{}{}", self.current_prefix(), entry.name);
+                if let Some(idx) = self.picker_state.selected()
+                    && idx < self.picker_entries.len()
+                {
+                    let entry = self.picker_entries[idx].clone();
+                    if entry.is_dir {
+                        self.picker_dir = self.picker_dir.join(&entry.name);
+                        self.refresh_picker();
+                    } else {
+                        // Upload the selected file
+                        let local_path = self.picker_dir.join(&entry.name);
+                        let s3_key = format!("{}{}", self.current_prefix(), entry.name);
 
-                            self.loading = true;
-                            self.view = View::Objects;
-                            terminal.draw(|frame| ui::draw(frame, self))?;
+                        self.loading = true;
+                        self.view = View::Objects;
+                        terminal.draw(|frame| ui::draw(frame, self))?;
 
-                            match s3::upload_file(
-                                &self.client,
-                                &self.current_bucket,
-                                &s3_key,
-                                &local_path,
-                            )
-                            .await
-                            {
-                                Ok(()) => {
-                                    self.error = Some(format!("Uploaded {}", entry.name));
-                                    self.load_objects(terminal).await?;
-                                }
-                                Err(e) => {
-                                    self.error = Some(e);
-                                    self.loading = false;
-                                }
+                        match s3::upload_file(
+                            &self.client,
+                            &self.current_bucket,
+                            &s3_key,
+                            &local_path,
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                self.error = Some(format!("Uploaded {}", entry.name));
+                                self.load_objects(terminal).await?;
+                            }
+                            Err(e) => {
+                                self.error = Some(e);
+                                self.loading = false;
                             }
                         }
                     }
@@ -746,7 +753,11 @@ impl<'a> App<'a> {
                 }
             }
         }
-        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+        entries.sort_by(|a, b| {
+            b.is_dir
+                .cmp(&a.is_dir)
+                .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
         self.picker_entries = entries;
         if self.picker_entries.is_empty() {
             self.picker_state.select(None);
