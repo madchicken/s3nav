@@ -101,7 +101,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
                         Span::styled("/", Style::default().fg(Color::DarkGray)),
                     ]))
                 } else {
-                    let icon = if s3::is_text_file(&entry.name) { "  " } else { "  " };
+                    let icon = if s3::is_text_file(&entry.name) { "📄 " } else { "📦 " };
                     ListItem::new(Line::from(vec![
                         Span::styled(icon, Style::default().fg(Color::DarkGray)),
                         Span::raw(&entry.name),

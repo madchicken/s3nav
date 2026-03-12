@@ -6,9 +6,15 @@ use aws_sdk_s3::primitives::ByteStream;
 use crate::Args;
 
 pub async fn create_client(args: &Args) -> Client {
-    let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest()).region(
-        aws_config::Region::new(args.region.clone()),
-    );
+    let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
+
+    if let Some(profile) = &args.profile {
+        config_loader = config_loader.profile_name(profile);
+    }
+
+    if let Some(region) = &args.region {
+        config_loader = config_loader.region(aws_config::Region::new(region.clone()));
+    }
 
     if let Some(endpoint) = &args.endpoint_url {
         config_loader = config_loader.endpoint_url(endpoint);
