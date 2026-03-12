@@ -1,22 +1,39 @@
-# ts3
+# s3nav
 
 A terminal UI file browser for Amazon S3, built with [ratatui](https://ratatui.rs).
 
-Browse your S3 buckets and objects, preview and edit text files inline, and download binary files — all from the terminal.
+Browse your S3 buckets and objects, preview and edit text files inline, upload and download files — all from the terminal.
 
 ## Features
 
 - **Browse buckets and objects** with a familiar file-manager interface
 - **Drill into folders** with stack-based prefix navigation
+- **Detail panel** showing file metadata (size, last modified, storage class, ETag)
 - **Preview text files** (json, yaml, xml, csv, markdown, source code, and many more) directly in the terminal with line numbers and scrolling
 - **Edit text files** with a built-in editor and save back to S3 (`Ctrl+S`)
+- **Upload files** via an interactive local file picker
 - **Download binary files** to a local directory (defaults to `~/Downloads`)
+- **Create and delete** files and folders
 - **Vim-style keybindings** alongside arrow keys
 - **S3-compatible** — works with AWS S3, MinIO, LocalStack, and other S3-compatible services via `--endpoint-url`
 
 ## Installation
 
+### From crates.io
+
+```bash
+cargo install s3nav
 ```
+
+### From GitHub Releases
+
+Download a prebuilt binary from the [Releases](https://github.com/madchicken/s3nav/releases) page.
+
+### From source
+
+```bash
+git clone https://github.com/madchicken/s3nav.git
+cd s3nav
 cargo install --path .
 ```
 
@@ -33,16 +50,16 @@ Then run:
 
 ```bash
 # Browse all buckets in us-east-1 (default region)
-ts3
+s3nav
 
 # Specify a region
-ts3 --region eu-west-1
+s3nav --region eu-west-1
 
 # Jump directly into a bucket
-ts3 --bucket my-bucket
+s3nav --bucket my-bucket
 
 # Use a custom S3 endpoint (MinIO, LocalStack, etc.)
-ts3 --endpoint-url http://localhost:9000
+s3nav --endpoint-url http://localhost:9000
 ```
 
 ## Keybindings
@@ -57,7 +74,11 @@ ts3 --endpoint-url http://localhost:9000
 | `Backspace` / `h`| Go back        |
 | `g` / `Home`    | Jump to first   |
 | `G` / `End`     | Jump to last    |
-| `q` / `Esc`     | Quit            |
+| `n`             | New folder       |
+| `c`             | New file         |
+| `u`             | Upload file      |
+| `d` / `Del`     | Delete           |
+| `q` / `Esc`     | Quit             |
 
 ### File Preview
 
@@ -78,16 +99,19 @@ ts3 --endpoint-url http://localhost:9000
 | `Ctrl+S`         | Save to S3      |
 | `Esc`            | Cancel editing  |
 
-### Download Prompt
+### File Picker (Upload)
 
 | Key              | Action          |
 |------------------|-----------------|
-| `Enter`          | Confirm download|
-| `Esc`            | Cancel          |
+| `j` / `↓`       | Move down       |
+| `k` / `↑`       | Move up         |
+| `Enter` / `l`   | Open dir / Upload file |
+| `Backspace` / `h`| Parent directory |
+| `.`              | Toggle hidden files |
+| `q` / `Esc`     | Cancel          |
 
 ## Requirements
 
-- Rust 2024 edition (1.85+)
 - AWS credentials via environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
 
 ## License

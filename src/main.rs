@@ -7,7 +7,7 @@ use color_eyre::Result;
 use std::env;
 
 #[derive(Parser, Debug)]
-#[command(name = "ts3", version, about = "TUI file browser for Amazon S3")]
+#[command(name = "s3nav", version, about = "TUI file browser for Amazon S3")]
 pub struct Args {
     /// AWS region (e.g. eu-west-1)
     #[arg(short, long, default_value = "us-east-1")]
