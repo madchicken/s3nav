@@ -31,6 +31,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             draw_list(frame, app, list_area);
             draw_detail_panel(frame, app, detail_area);
         }
+        View::FilePicker => draw_file_picker(frame, app, main_area),
         _ => draw_list(frame, app, main_area),
     }
 
@@ -54,6 +55,9 @@ fn draw_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         View::FileEdit => {
             let modified = if app.editor_modified { " [modified]" } else { "" };
             format!(" EDITING: {}{}", app.editor_name, modified)
+        }
+        View::FilePicker => {
+            format!(" Upload from: {}", app.picker_dir.display())
         }
     };
 
@@ -177,6 +181,54 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     app.editor.set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
 
     frame.render_widget(&app.editor, area);
+}
+
+fn draw_file_picker(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+    let items: Vec<ListItem> = app
+        .picker_entries
+        .iter()
+        .map(|entry| {
+            if entry.is_dir {
+                ListItem::new(Line::from(vec![
+                    Span::styled("  ", Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        &entry.name,
+                        Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("/", Style::default().fg(Color::DarkGray)),
+                ]))
+            } else {
+                ListItem::new(Line::from(vec![
+                    Span::styled("  ", Style::default().fg(Color::DarkGray)),
+                    Span::raw(&entry.name),
+                    Span::styled(
+                        format!("  {}", format_size(entry.size as i64)),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]))
+            }
+        })
+        .collect();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(Span::styled(
+            " Select a file to upload ",
+            Style::default().fg(Color::Yellow),
+        ));
+
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ")
+        .highlight_spacing(HighlightSpacing::Always);
+
+    StatefulWidget::render(list, area, frame.buffer_mut(), &mut app.picker_state);
 }
 
 fn draw_detail_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -331,7 +383,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
 
     if let Some(msg) = &app.error {
-        let is_success = msg.starts_with("Downloaded to") || msg.starts_with("Saved ") || msg.starts_with("Deleted ") || msg.starts_with("Created ");
+        let is_success = msg.starts_with("Downloaded to") || msg.starts_with("Saved ") || msg.starts_with("Deleted ") || msg.starts_with("Created ") || msg.starts_with("Uploaded ");
         let color = if is_success { Color::Green } else { Color::Red };
         let label = if is_success { " OK: " } else { " ERROR: " };
         let line = Paragraph::new(Line::from(vec![
@@ -361,6 +413,18 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::styled("Esc", Style::default().fg(Color::Cyan)),
             Span::raw(" cancel"),
         ])),
+        View::FilePicker => Paragraph::new(Line::from(vec![
+            Span::styled(" ↑↓/jk", Style::default().fg(Color::Cyan)),
+            Span::raw(" navigate  "),
+            Span::styled("Enter/l", Style::default().fg(Color::Cyan)),
+            Span::raw(" open/upload  "),
+            Span::styled("Backspace/h", Style::default().fg(Color::Cyan)),
+            Span::raw(" parent dir  "),
+            Span::styled(".", Style::default().fg(Color::Cyan)),
+            Span::raw(" toggle hidden  "),
+            Span::styled("q/Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" cancel"),
+        ])),
         View::Objects => Paragraph::new(Line::from(vec![
             Span::styled(" ↑↓/jk", Style::default().fg(Color::Cyan)),
             Span::raw(" navigate  "),
@@ -370,6 +434,8 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(" new folder  "),
             Span::styled("c", Style::default().fg(Color::Cyan)),
             Span::raw(" new file  "),
+            Span::styled("u", Style::default().fg(Color::Cyan)),
+            Span::raw(" upload  "),
             Span::styled("d", Style::default().fg(Color::Cyan)),
             Span::raw(" delete  "),
             Span::styled("h", Style::default().fg(Color::Cyan)),

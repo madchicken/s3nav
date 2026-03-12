@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use aws_sdk_s3::Client;
 use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -18,6 +20,7 @@ pub enum View {
     DeleteConfirm,
     CreateFolder,
     CreateFile,
+    FilePicker,
 }
 
 pub struct App<'a> {
@@ -52,6 +55,17 @@ pub struct App<'a> {
     // Create folder/file state
     pub new_folder_input: String,
     pub new_file_input: String,
+    // File picker state
+    pub picker_dir: PathBuf,
+    pub picker_entries: Vec<LocalEntry>,
+    pub picker_state: ListState,
+}
+
+#[derive(Clone, Debug)]
+pub struct LocalEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
 }
 
 impl<'a> App<'a> {
@@ -83,6 +97,9 @@ impl<'a> App<'a> {
             delete_is_dir: false,
             new_folder_input: String::new(),
             new_file_input: String::new(),
+            picker_dir: PathBuf::new(),
+            picker_entries: vec![],
+            picker_state: ListState::default(),
         }
     }
 
@@ -94,6 +111,7 @@ impl<'a> App<'a> {
         match self.view {
             View::Buckets => self.buckets.len(),
             View::Objects => self.entries.len(),
+            View::FilePicker => self.picker_entries.len(),
             _ => 0,
         }
     }
@@ -137,6 +155,7 @@ impl<'a> App<'a> {
             View::DeleteConfirm => self.handle_delete_confirm_key(key.code, terminal).await?,
             View::CreateFolder => self.handle_create_folder_key(key.code, terminal).await?,
             View::CreateFile => self.handle_create_file_key(key.code, terminal).await?,
+            View::FilePicker => self.handle_picker_key(key.code, terminal).await?,
             _ => {
                 self.error = None;
                 self.handle_list_key(key.code, terminal).await?;
@@ -175,6 +194,11 @@ impl<'a> App<'a> {
                 if self.view == View::Objects {
                     self.new_file_input.clear();
                     self.view = View::CreateFile;
+                }
+            }
+            KeyCode::Char('u') => {
+                if self.view == View::Objects {
+                    self.open_file_picker();
                 }
             }
             _ => {}
@@ -577,6 +601,158 @@ impl<'a> App<'a> {
             _ => {}
         }
         Ok(())
+    }
+
+    fn open_file_picker(&mut self) {
+        let start_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        self.picker_dir = start_dir;
+        self.refresh_picker();
+        self.view = View::FilePicker;
+    }
+
+    fn refresh_picker(&mut self) {
+        let mut entries = Vec::new();
+        if let Ok(read_dir) = std::fs::read_dir(&self.picker_dir) {
+            for entry in read_dir.flatten() {
+                let Ok(meta) = entry.metadata() else {
+                    continue;
+                };
+                let Some(name) = entry.file_name().to_str().map(String::from) else {
+                    continue;
+                };
+                // Skip hidden files
+                if name.starts_with('.') {
+                    continue;
+                }
+                if meta.is_dir() || meta.is_file() {
+                    entries.push(LocalEntry {
+                        name,
+                        is_dir: meta.is_dir(),
+                        size: meta.len(),
+                    });
+                }
+            }
+        }
+        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+        self.picker_entries = entries;
+        if self.picker_entries.is_empty() {
+            self.picker_state.select(None);
+        } else {
+            self.picker_state.select(Some(0));
+        }
+    }
+
+    async fn handle_picker_key(
+        &mut self,
+        code: KeyCode,
+        terminal: &mut DefaultTerminal,
+    ) -> Result<()> {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.view = View::Objects;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if !self.picker_entries.is_empty() {
+                    self.picker_state.select_next();
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if !self.picker_entries.is_empty() {
+                    self.picker_state.select_previous();
+                }
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                if !self.picker_entries.is_empty() {
+                    self.picker_state.select_first();
+                }
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                if !self.picker_entries.is_empty() {
+                    self.picker_state.select_last();
+                }
+            }
+            KeyCode::Char('.') => {
+                // Toggle hidden files: re-read including hidden
+                self.refresh_picker_toggle_hidden();
+            }
+            KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => {
+                if let Some(parent) = self.picker_dir.parent() {
+                    self.picker_dir = parent.to_path_buf();
+                    self.refresh_picker();
+                }
+            }
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                if let Some(idx) = self.picker_state.selected() {
+                    if idx < self.picker_entries.len() {
+                        let entry = self.picker_entries[idx].clone();
+                        if entry.is_dir {
+                            self.picker_dir = self.picker_dir.join(&entry.name);
+                            self.refresh_picker();
+                        } else {
+                            // Upload the selected file
+                            let local_path = self.picker_dir.join(&entry.name);
+                            let s3_key = format!("{}{}", self.current_prefix(), entry.name);
+
+                            self.loading = true;
+                            self.view = View::Objects;
+                            terminal.draw(|frame| ui::draw(frame, self))?;
+
+                            match s3::upload_file(
+                                &self.client,
+                                &self.current_bucket,
+                                &s3_key,
+                                &local_path,
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    self.error = Some(format!("Uploaded {}", entry.name));
+                                    self.load_objects(terminal).await?;
+                                }
+                                Err(e) => {
+                                    self.error = Some(e);
+                                    self.loading = false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn refresh_picker_toggle_hidden(&mut self) {
+        let mut entries = Vec::new();
+        let show_hidden = !self.picker_entries.iter().any(|e| e.name.starts_with('.'));
+        if let Ok(read_dir) = std::fs::read_dir(&self.picker_dir) {
+            for entry in read_dir.flatten() {
+                let Ok(meta) = entry.metadata() else {
+                    continue;
+                };
+                let Some(name) = entry.file_name().to_str().map(String::from) else {
+                    continue;
+                };
+                if !show_hidden && name.starts_with('.') {
+                    continue;
+                }
+                if meta.is_dir() || meta.is_file() {
+                    entries.push(LocalEntry {
+                        name,
+                        is_dir: meta.is_dir(),
+                        size: meta.len(),
+                    });
+                }
+            }
+        }
+        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+        self.picker_entries = entries;
+        if self.picker_entries.is_empty() {
+            self.picker_state.select(None);
+        } else {
+            self.picker_state.select(Some(0));
+        }
     }
 
     async fn go_back(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {

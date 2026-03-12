@@ -218,6 +218,28 @@ pub async fn delete_prefix(client: &Client, bucket: &str, prefix: &str) -> Resul
     Ok(deleted)
 }
 
+pub async fn upload_file(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    path: &Path,
+) -> Result<(), String> {
+    let body = ByteStream::from_path(path)
+        .await
+        .map_err(|e| format!("Failed to read file: {e}"))?;
+
+    client
+        .put_object()
+        .bucket(bucket)
+        .key(key)
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to upload: {e}"))?;
+
+    Ok(())
+}
+
 const TEXT_EXTENSIONS: &[&str] = &[
     "txt", "json", "yaml", "yml", "xml", "csv", "tsv", "md", "markdown",
     "html", "htm", "css", "js", "ts", "jsx", "tsx", "py", "rb", "rs",
