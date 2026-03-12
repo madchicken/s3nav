@@ -1,6 +1,6 @@
 [package]
 name = "s3nav"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A terminal UI file browser for Amazon S3"
 license = "MIT"
