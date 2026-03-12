@@ -17,6 +17,7 @@ pub enum View {
     DownloadPrompt,
     DeleteConfirm,
     CreateFolder,
+    CreateFile,
 }
 
 pub struct App<'a> {
@@ -48,8 +49,9 @@ pub struct App<'a> {
     pub delete_target_name: String,
     pub delete_target_key: String,
     pub delete_is_dir: bool,
-    // Create folder state
+    // Create folder/file state
     pub new_folder_input: String,
+    pub new_file_input: String,
 }
 
 impl<'a> App<'a> {
@@ -80,6 +82,7 @@ impl<'a> App<'a> {
             delete_target_key: String::new(),
             delete_is_dir: false,
             new_folder_input: String::new(),
+            new_file_input: String::new(),
         }
     }
 
@@ -133,6 +136,7 @@ impl<'a> App<'a> {
             View::DownloadPrompt => self.handle_download_key(key.code, terminal).await?,
             View::DeleteConfirm => self.handle_delete_confirm_key(key.code, terminal).await?,
             View::CreateFolder => self.handle_create_folder_key(key.code, terminal).await?,
+            View::CreateFile => self.handle_create_file_key(key.code, terminal).await?,
             _ => {
                 self.error = None;
                 self.handle_list_key(key.code, terminal).await?;
@@ -165,6 +169,12 @@ impl<'a> App<'a> {
                 if self.view == View::Objects {
                     self.new_folder_input.clear();
                     self.view = View::CreateFolder;
+                }
+            }
+            KeyCode::Char('c') => {
+                if self.view == View::Objects {
+                    self.new_file_input.clear();
+                    self.view = View::CreateFile;
                 }
             }
             _ => {}
@@ -233,16 +243,17 @@ impl<'a> App<'a> {
             Ok(()) => {
                 self.error = Some(format!("Saved {}", self.editor_name));
                 self.editor_modified = false;
-                // Update preview content and go back to preview
                 self.preview_content = content;
                 self.preview_scroll = 0;
                 self.view = View::FilePreview;
+                // Reload objects so the detail panel shows updated metadata
+                self.load_objects(terminal).await?;
             }
             Err(e) => {
                 self.error = Some(e);
+                self.loading = false;
             }
         }
-        self.loading = false;
         Ok(())
     }
 
@@ -517,6 +528,51 @@ impl<'a> App<'a> {
             }
             KeyCode::Char(c) => {
                 self.new_folder_input.push(c);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn handle_create_file_key(
+        &mut self,
+        code: KeyCode,
+        terminal: &mut DefaultTerminal,
+    ) -> Result<()> {
+        match code {
+            KeyCode::Esc => {
+                self.view = View::Objects;
+                self.new_file_input.clear();
+            }
+            KeyCode::Enter => {
+                let name = self.new_file_input.trim().to_string();
+                if name.is_empty() {
+                    self.view = View::Objects;
+                    return Ok(());
+                }
+                let key = format!("{}{}", self.current_prefix(), name);
+
+                self.loading = true;
+                self.view = View::Objects;
+                terminal.draw(|frame| ui::draw(frame, self))?;
+
+                match s3::put_object(&self.client, &self.current_bucket, &key, "").await {
+                    Ok(()) => {
+                        self.error = Some(format!("Created file {name}"));
+                        self.new_file_input.clear();
+                        self.load_objects(terminal).await?;
+                    }
+                    Err(e) => {
+                        self.error = Some(e);
+                        self.loading = false;
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                self.new_file_input.pop();
+            }
+            KeyCode::Char(c) => {
+                self.new_file_input.push(c);
             }
             _ => {}
         }

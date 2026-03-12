@@ -23,7 +23,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     match &app.view {
         View::FilePreview => draw_preview(frame, app, main_area),
         View::FileEdit => draw_editor(frame, app, main_area),
-        View::Objects | View::DownloadPrompt | View::DeleteConfirm | View::CreateFolder => {
+        View::Objects | View::DownloadPrompt | View::DeleteConfirm | View::CreateFolder | View::CreateFile => {
             let [list_area, detail_area] = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Fill(1), Constraint::Length(40)])
@@ -40,7 +40,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let title = match &app.view {
         View::Buckets => " S3 Buckets".to_string(),
-        View::Objects | View::DownloadPrompt | View::DeleteConfirm | View::CreateFolder => {
+        View::Objects | View::DownloadPrompt | View::DeleteConfirm | View::CreateFolder | View::CreateFile => {
             let prefix = app.current_prefix();
             if prefix.is_empty() {
                 format!(" s3://{}", app.current_bucket)
@@ -83,7 +83,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
                 ]))
             })
             .collect(),
-        View::Objects | View::DownloadPrompt | View::DeleteConfirm | View::CreateFolder => app
+        View::Objects | View::DownloadPrompt | View::DeleteConfirm | View::CreateFolder | View::CreateFile => app
             .entries
             .iter()
             .map(|entry| {
@@ -299,6 +299,21 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         return;
     }
 
+    if app.view == View::CreateFile {
+        let prompt = Paragraph::new(Line::from(vec![
+            Span::styled(" New file: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw(&app.new_file_input),
+            Span::styled("█", Style::default().fg(Color::White)),
+            Span::raw("  "),
+            Span::styled("Enter", Style::default().fg(Color::Cyan)),
+            Span::raw(" create  "),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" cancel"),
+        ]));
+        frame.render_widget(prompt, area);
+        return;
+    }
+
     if app.view == View::DownloadPrompt {
         let prompt = Paragraph::new(Line::from(vec![
             Span::styled(" Save to: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
@@ -353,6 +368,8 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(" open  "),
             Span::styled("n", Style::default().fg(Color::Cyan)),
             Span::raw(" new folder  "),
+            Span::styled("c", Style::default().fg(Color::Cyan)),
+            Span::raw(" new file  "),
             Span::styled("d", Style::default().fg(Color::Cyan)),
             Span::raw(" delete  "),
             Span::styled("h", Style::default().fg(Color::Cyan)),
