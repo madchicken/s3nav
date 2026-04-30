@@ -121,9 +121,16 @@ impl<'a> App<'a> {
         self.loading = true;
         terminal.draw(|frame| ui::draw(frame, &mut self))?;
 
-        if let Some(bucket) = self.initial_bucket.take() {
+        if let Some(bucket_arg) = self.initial_bucket.take() {
+            let (bucket, prefix) = match bucket_arg.split_once('/') {
+                Some((b, p)) => (b.to_string(), p.trim_matches('/').to_string()),
+                None => (bucket_arg, String::new()),
+            };
             self.current_bucket = bucket;
             self.prefix_stack.push(String::new());
+            if !prefix.is_empty() {
+                self.prefix_stack.push(format!("{prefix}/"));
+            }
             self.view = View::Objects;
             self.load_objects(&mut terminal).await?;
         } else {

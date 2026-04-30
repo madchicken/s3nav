@@ -20,7 +20,7 @@ pub struct Args {
     #[arg(short, long)]
     pub endpoint_url: Option<String>,
 
-    /// Start directly in this bucket
+    /// Start directly in this bucket, optionally followed by a prefix (e.g. `my-bucket/some/prefix`)
     #[arg(short, long)]
     pub bucket: Option<String>,
 }
