@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -88,7 +88,21 @@ fn draw_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::styled(status, Style::default().fg(Color::Yellow)),
     ]));
 
-    frame.render_widget(header, area);
+    // Reserve the right side of the header for the active connection summary
+    // (endpoint · region · profile), always visible across views.
+    let summary = format!("{} ", app.connection.summary());
+    let summary_width = summary.chars().count() as u16;
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(summary_width)]).areas(area);
+
+    frame.render_widget(header, left_area);
+
+    let connection = Paragraph::new(Line::from(Span::styled(
+        summary,
+        Style::default().fg(Color::DarkGray),
+    )))
+    .alignment(Alignment::Right);
+    frame.render_widget(connection, right_area);
 }
 
 fn draw_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {

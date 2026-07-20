@@ -31,6 +31,15 @@ impl ConnectionParams {
             endpoint_url: p.endpoint_url.clone(),
         }
     }
+
+    /// One-line summary of the active connection for display in the header.
+    /// Missing values fall back to "AWS" (endpoint) or "default" (region/profile).
+    pub fn summary(&self) -> String {
+        let endpoint = self.endpoint_url.as_deref().unwrap_or("AWS");
+        let region = self.region.as_deref().unwrap_or("default");
+        let profile = self.profile.as_deref().unwrap_or("default");
+        format!("{endpoint} · {region} · {profile}")
+    }
 }
 
 pub async fn create_client(params: &ConnectionParams) -> Client {
@@ -417,5 +426,21 @@ mod tests {
         assert_eq!(c.profile.as_deref(), Some("dev"));
         assert_eq!(c.region.as_deref(), Some("us-east-1"));
         assert_eq!(c.endpoint_url.as_deref(), Some("http://localhost:9000"));
+    }
+
+    #[test]
+    fn summary_uses_values_when_present() {
+        let c = ConnectionParams {
+            profile: Some("dev".into()),
+            region: Some("eu-west-1".into()),
+            endpoint_url: Some("http://localhost:9000".into()),
+        };
+        assert_eq!(c.summary(), "http://localhost:9000 · eu-west-1 · dev");
+    }
+
+    #[test]
+    fn summary_falls_back_to_defaults_when_absent() {
+        let c = ConnectionParams::default();
+        assert_eq!(c.summary(), "AWS · default · default");
     }
 }
