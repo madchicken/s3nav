@@ -31,7 +31,8 @@ async fn main() -> Result<()> {
     color_eyre::install()?;
 
     let args = Args::parse();
-    let client = s3::create_client(&args).await;
+    let connection = s3::ConnectionParams::from_args(&args);
+    let client = s3::create_client(&connection).await;
 
     let terminal = ratatui::init();
     let result = app::App::new(client, args.bucket).run(terminal).await;
