@@ -67,8 +67,12 @@ pub struct App<'a> {
     pub configs: Vec<SavedProfile>,
     pub connection: ConnectionParams,
     pub config_delete_pending: bool,
+    /// True while a quit confirmation is pending in the bucket/objects list.
+    pub quit_pending: bool,
     pub config_form: ConfigForm,
     pub config_form_origin: View,
+    /// When editing an existing config, its index in `configs`; `None` for a new config.
+    pub config_form_edit_index: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -86,6 +90,8 @@ pub struct ConfigForm {
     pub endpoint_url: String,
     pub bucket: String,
     pub field: usize,
+    /// Caret position within the active field, counted in characters.
+    pub cursor: usize,
 }
 
 impl ConfigForm {
@@ -93,10 +99,12 @@ impl ConfigForm {
 
     fn next_field(&mut self) {
         self.field = (self.field + 1) % Self::FIELDS;
+        self.cursor = self.active_str().chars().count();
     }
 
     fn prev_field(&mut self) {
         self.field = (self.field + Self::FIELDS - 1) % Self::FIELDS;
+        self.cursor = self.active_str().chars().count();
     }
 
     fn active_buf(&mut self) -> &mut String {
@@ -107,6 +115,71 @@ impl ConfigForm {
             3 => &mut self.endpoint_url,
             _ => &mut self.bucket,
         }
+    }
+
+    fn active_str(&self) -> &str {
+        match self.field {
+            0 => &self.name,
+            1 => &self.profile,
+            2 => &self.region,
+            3 => &self.endpoint_url,
+            _ => &self.bucket,
+        }
+    }
+
+    /// Byte offset of the `char_idx`-th character (or the end of the string).
+    fn byte_at(s: &str, char_idx: usize) -> usize {
+        s.char_indices()
+            .nth(char_idx)
+            .map(|(b, _)| b)
+            .unwrap_or(s.len())
+    }
+
+    fn insert_char(&mut self, c: char) {
+        let cursor = self.cursor;
+        let buf = self.active_buf();
+        let byte = Self::byte_at(buf, cursor);
+        buf.insert(byte, c);
+        self.cursor += 1;
+    }
+
+    /// Delete the character before the caret (Backspace).
+    fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let target = self.cursor - 1;
+        let buf = self.active_buf();
+        if let Some((byte, ch)) = buf.char_indices().nth(target) {
+            buf.replace_range(byte..byte + ch.len_utf8(), "");
+            self.cursor -= 1;
+        }
+    }
+
+    /// Delete the character at the caret (Delete), leaving the caret in place.
+    fn delete_forward(&mut self) {
+        let target = self.cursor;
+        let buf = self.active_buf();
+        if let Some((byte, ch)) = buf.char_indices().nth(target) {
+            buf.replace_range(byte..byte + ch.len_utf8(), "");
+        }
+    }
+
+    fn move_left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    fn move_right(&mut self) {
+        let len = self.active_str().chars().count();
+        self.cursor = (self.cursor + 1).min(len);
+    }
+
+    fn move_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn move_end(&mut self) {
+        self.cursor = self.active_str().chars().count();
     }
 
     fn clear(&mut self) {
@@ -147,6 +220,20 @@ impl ConfigForm {
             endpoint_url: conn.endpoint_url.clone().unwrap_or_default(),
             bucket: bucket_field,
             field: 0,
+            cursor: 0,
+        }
+    }
+
+    /// Pre-fill from an existing saved config (for editing it).
+    fn from_profile(p: &SavedProfile) -> Self {
+        Self {
+            name: p.name.clone(),
+            profile: p.profile.clone().unwrap_or_default(),
+            region: p.region.clone().unwrap_or_default(),
+            endpoint_url: p.endpoint_url.clone().unwrap_or_default(),
+            bucket: p.bucket.clone().unwrap_or_default(),
+            field: 0,
+            cursor: p.name.chars().count(),
         }
     }
 }
@@ -191,8 +278,10 @@ impl<'a> App<'a> {
             configs,
             connection,
             config_delete_pending: false,
+            quit_pending: false,
             config_form: ConfigForm::default(),
             config_form_origin: View::ConfigSelector,
+            config_form_edit_index: None,
         }
     }
 
@@ -288,20 +377,24 @@ impl<'a> App<'a> {
             KeyCode::Esc => {
                 self.config_form.clear();
                 self.error = None;
+                self.config_form_edit_index = None;
                 self.view = self.config_form_origin.clone();
             }
             KeyCode::Tab | KeyCode::Down => self.config_form.next_field(),
             KeyCode::BackTab | KeyCode::Up => self.config_form.prev_field(),
+            KeyCode::Left => self.config_form.move_left(),
+            KeyCode::Right => self.config_form.move_right(),
+            KeyCode::Home => self.config_form.move_home(),
+            KeyCode::End => self.config_form.move_end(),
             KeyCode::Enter => self.save_config_form(terminal).await?,
-            KeyCode::Backspace => {
-                self.config_form.active_buf().pop();
-            }
+            KeyCode::Backspace => self.config_form.backspace(),
+            KeyCode::Delete => self.config_form.delete_forward(),
             KeyCode::Char(c)
                 if !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                self.config_form.active_buf().push(c);
+                self.config_form.insert_char(c);
             }
             _ => {}
         }
@@ -316,10 +409,17 @@ impl<'a> App<'a> {
         }
 
         let mut profiles = self.configs.clone();
-        if let Some(existing) = profiles.iter_mut().find(|p| p.name == profile.name) {
-            *existing = profile.clone();
-        } else {
-            profiles.push(profile.clone());
+        match self.config_form_edit_index {
+            // Editing an existing config: replace it in place (allows renaming).
+            Some(i) if i < profiles.len() => profiles[i] = profile.clone(),
+            // New config (or save-session): replace by name if present, else append.
+            _ => {
+                if let Some(existing) = profiles.iter_mut().find(|p| p.name == profile.name) {
+                    *existing = profile.clone();
+                } else {
+                    profiles.push(profile.clone());
+                }
+            }
         }
         let config = config::Config {
             profiles: profiles.clone(),
@@ -330,6 +430,7 @@ impl<'a> App<'a> {
                 self.configs = profiles;
                 self.error = Some(format!("Saved config {}", profile.name));
                 self.config_form.clear();
+                self.config_form_edit_index = None;
                 self.view = self.config_form_origin.clone();
                 if self.config_form_origin == View::ConfigSelector
                     && let Some(i) = self.configs.iter().position(|p| p.name == profile.name)
@@ -374,7 +475,19 @@ impl<'a> App<'a> {
                 self.config_form = ConfigForm::default();
                 self.error = None;
                 self.config_form_origin = View::ConfigSelector;
+                self.config_form_edit_index = None;
                 self.view = View::ConfigForm;
+            }
+            KeyCode::Char('e') => {
+                if let Some(i) = self.list_state.selected()
+                    && let Some(profile) = self.configs.get(i)
+                {
+                    self.config_form = ConfigForm::from_profile(profile);
+                    self.error = None;
+                    self.config_form_origin = View::ConfigSelector;
+                    self.config_form_edit_index = Some(i);
+                    self.view = View::ConfigForm;
+                }
             }
             KeyCode::Char('d') | KeyCode::Delete => {
                 if !self.configs.is_empty() {
@@ -445,8 +558,16 @@ impl<'a> App<'a> {
         code: KeyCode,
         terminal: &mut DefaultTerminal,
     ) -> Result<()> {
+        if self.quit_pending {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => self.should_exit = true,
+                _ => self.quit_pending = false,
+            }
+            return Ok(());
+        }
         match code {
-            KeyCode::Char('q') | KeyCode::Esc => self.go_back_or_quit(),
+            KeyCode::Char('q') => self.should_exit = true,
+            KeyCode::Esc => self.esc_back(terminal).await?,
             KeyCode::Down | KeyCode::Char('j') => self.select_next(),
             KeyCode::Up | KeyCode::Char('k') => self.select_previous(),
             KeyCode::Home | KeyCode::Char('g') => self.select_first(),
@@ -479,6 +600,7 @@ impl<'a> App<'a> {
                         ConfigForm::from_session(&self.connection, &self.current_bucket, &prefix);
                     self.error = None;
                     self.config_form_origin = View::Buckets;
+                    self.config_form_edit_index = None;
                     self.view = View::ConfigForm;
                 }
             }
@@ -641,13 +763,20 @@ impl<'a> App<'a> {
         Ok(())
     }
 
-    fn go_back_or_quit(&mut self) {
-        if self.view == View::Buckets {
-            self.should_exit = true;
+    /// Esc navigates back one folder level; at the bucket root (or in the
+    /// bucket list) it asks for confirmation before quitting.
+    async fn esc_back(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        match self.view {
+            View::Objects if self.prefix_stack.len() > 1 => {
+                self.prefix_stack.pop();
+                self.load_objects(terminal).await?;
+            }
+            View::Objects | View::Buckets => {
+                self.quit_pending = true;
+            }
+            _ => {}
         }
-        if self.view == View::Objects {
-            self.should_exit = true;
-        }
+        Ok(())
     }
 
     fn select_next(&mut self) {
@@ -1140,6 +1269,7 @@ mod tests {
             endpoint_url: String::new(),
             bucket: "b/p".into(),
             field: 0,
+            cursor: 0,
         };
         let p = form.to_profile();
         assert_eq!(p.name, "prod");
@@ -1147,5 +1277,60 @@ mod tests {
         assert_eq!(p.region.as_deref(), Some("eu-west-1"));
         assert_eq!(p.endpoint_url, None);
         assert_eq!(p.bucket.as_deref(), Some("b/p"));
+    }
+
+    #[test]
+    fn config_form_from_profile_round_trips() {
+        let original = SavedProfile {
+            name: "prod".into(),
+            profile: Some("prod-acct".into()),
+            region: Some("eu-west-1".into()),
+            endpoint_url: None,
+            bucket: Some("my-bucket/data".into()),
+        };
+        let form = ConfigForm::from_profile(&original);
+        // Absent optional fields become empty strings in the form.
+        assert_eq!(form.name, "prod");
+        assert_eq!(form.endpoint_url, "");
+        assert_eq!(form.field, 0);
+        // Editing nothing and saving reproduces the original profile.
+        assert_eq!(form.to_profile(), original);
+    }
+
+    #[test]
+    fn config_form_cursor_editing() {
+        let mut form = ConfigForm::default();
+        // field 0 (name), cursor 0
+        form.insert_char('a');
+        form.insert_char('c');
+        assert_eq!(form.name, "ac");
+        assert_eq!(form.cursor, 2);
+        // Move caret between the two chars and insert.
+        form.move_left();
+        assert_eq!(form.cursor, 1);
+        form.insert_char('b');
+        assert_eq!(form.name, "abc");
+        assert_eq!(form.cursor, 2);
+        // Backspace removes the char before the caret ('b').
+        form.backspace();
+        assert_eq!(form.name, "ac");
+        assert_eq!(form.cursor, 1);
+        // Delete removes the char at the caret ('c'), caret stays.
+        form.delete_forward();
+        assert_eq!(form.name, "a");
+        assert_eq!(form.cursor, 1);
+        // Home/End bounds.
+        form.move_home();
+        assert_eq!(form.cursor, 0);
+        form.move_left();
+        assert_eq!(form.cursor, 0);
+        form.move_end();
+        assert_eq!(form.cursor, 1);
+        form.move_right();
+        assert_eq!(form.cursor, 1);
+        // Switching fields moves the caret to the end of the new field.
+        form.next_field();
+        assert_eq!(form.field, 1);
+        assert_eq!(form.cursor, 0);
     }
 }

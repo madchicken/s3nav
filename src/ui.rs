@@ -73,7 +73,13 @@ fn draw_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             format!(" Upload from: {}", app.picker_dir.display())
         }
         View::ConfigSelector => " Select configuration".to_string(),
-        View::ConfigForm => " New configuration".to_string(),
+        View::ConfigForm => {
+            if app.config_form_edit_index.is_some() {
+                " Edit configuration".to_string()
+            } else {
+                " New configuration".to_string()
+            }
+        }
     };
 
     let status = if app.loading { " Loading..." } else { "" };
@@ -337,13 +343,31 @@ fn draw_config_form(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rec
         } else {
             Style::default().fg(Color::Gray)
         };
-        let cursor = if active { "█" } else { "" };
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::styled(marker, Style::default().fg(Color::Cyan)),
             Span::styled(format!("{label:>13}: "), label_style),
-            Span::raw(value.as_str()),
-            Span::styled(cursor, Style::default().fg(Color::White)),
-        ]));
+        ];
+        if active {
+            // Render the value with the caret drawn over the character at the
+            // cursor position (or a trailing block when the caret is at the end).
+            let chars: Vec<char> = value.chars().collect();
+            let cur = app.config_form.cursor.min(chars.len());
+            let before: String = chars[..cur].iter().collect();
+            let (at, after) = if cur < chars.len() {
+                (chars[cur].to_string(), chars[cur + 1..].iter().collect())
+            } else {
+                (" ".to_string(), String::new())
+            };
+            spans.push(Span::raw(before));
+            spans.push(Span::styled(
+                at,
+                Style::default().add_modifier(Modifier::REVERSED),
+            ));
+            spans.push(Span::raw(after));
+        } else {
+            spans.push(Span::raw(value.as_str()));
+        }
+        lines.push(Line::from(spans));
         lines.push(Line::from(""));
     }
     lines.push(Line::from(Span::styled(
@@ -499,6 +523,24 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         return;
     }
 
+    if app.quit_pending {
+        let prompt = Paragraph::new(Line::from(vec![
+            Span::styled(
+                " Quit s3nav? ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "y",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" confirm  "),
+            Span::styled("any key", Style::default().fg(Color::Cyan)),
+            Span::raw(" cancel"),
+        ]));
+        frame.render_widget(prompt, area);
+        return;
+    }
+
     if app.view == View::CreateFolder {
         let prompt = Paragraph::new(Line::from(vec![
             Span::styled(
@@ -625,7 +667,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(" delete  "),
             Span::styled("r", Style::default().fg(Color::Cyan)),
             Span::raw(" refresh  "),
-            Span::styled("h", Style::default().fg(Color::Cyan)),
+            Span::styled("Esc/h", Style::default().fg(Color::Cyan)),
             Span::raw(" back  "),
             Span::styled("q", Style::default().fg(Color::Cyan)),
             Span::raw(" quit"),
@@ -637,6 +679,8 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(" connect  "),
             Span::styled("n", Style::default().fg(Color::Cyan)),
             Span::raw(" new  "),
+            Span::styled("e", Style::default().fg(Color::Cyan)),
+            Span::raw(" edit  "),
             Span::styled("d", Style::default().fg(Color::Cyan)),
             Span::raw(" delete  "),
             Span::styled("q", Style::default().fg(Color::Cyan)),
