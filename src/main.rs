@@ -31,11 +31,28 @@ async fn main() -> Result<()> {
     color_eyre::install()?;
 
     let args = Args::parse();
+
+    let (configs, load_err) = match config::load() {
+        Ok(c) => (c.profiles, None),
+        Err(e) => (Vec::new(), Some(e)),
+    };
+
+    let cli_flags = args.profile.is_some()
+        || args.region.is_some()
+        || args.endpoint_url.is_some()
+        || args.bucket.is_some();
+    let start_in_selector = !cli_flags && !configs.is_empty();
+
     let connection = s3::ConnectionParams::from_args(&args);
     let client = s3::create_client(&connection).await;
 
     let terminal = ratatui::init();
-    let result = app::App::new(client, args.bucket).run(terminal).await;
+    let mut app = app::App::new(client, connection, args.bucket, configs);
+    if start_in_selector {
+        app.view = app::View::ConfigSelector;
+    }
+    app.error = load_err;
+    let result = app.run(terminal).await;
     ratatui::restore();
 
     result

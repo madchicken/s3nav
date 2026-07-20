@@ -7,7 +7,8 @@ use ratatui::DefaultTerminal;
 use ratatui::widgets::ListState;
 use tui_textarea::TextArea;
 
-use crate::s3::{self, S3Entry};
+use crate::config::{self, SavedProfile};
+use crate::s3::{self, ConnectionParams, S3Entry};
 use crate::ui;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +22,8 @@ pub enum View {
     CreateFolder,
     CreateFile,
     FilePicker,
+    ConfigSelector,
+    ConfigForm,
 }
 
 pub struct App<'a> {
@@ -59,6 +62,12 @@ pub struct App<'a> {
     pub picker_dir: PathBuf,
     pub picker_entries: Vec<LocalEntry>,
     pub picker_state: ListState,
+
+    // Saved configurations
+    pub configs: Vec<SavedProfile>,
+    pub connection: ConnectionParams,
+    pub config_delete_pending: bool,
+    pub config_form: ConfigForm,
 }
 
 #[derive(Clone, Debug)]
@@ -68,8 +77,25 @@ pub struct LocalEntry {
     pub size: u64,
 }
 
+// Fields are unused until Task 4 wires up the form's key handler.
+#[allow(dead_code)]
+#[derive(Default)]
+pub struct ConfigForm {
+    pub name: String,
+    pub profile: String,
+    pub region: String,
+    pub endpoint_url: String,
+    pub bucket: String,
+    pub field: usize,
+}
+
 impl<'a> App<'a> {
-    pub fn new(client: Client, initial_bucket: Option<String>) -> Self {
+    pub fn new(
+        client: Client,
+        connection: ConnectionParams,
+        initial_bucket: Option<String>,
+        configs: Vec<SavedProfile>,
+    ) -> Self {
         Self {
             client,
             should_exit: false,
@@ -100,6 +126,10 @@ impl<'a> App<'a> {
             picker_dir: PathBuf::new(),
             picker_entries: vec![],
             picker_state: ListState::default(),
+            configs,
+            connection,
+            config_delete_pending: false,
+            config_form: ConfigForm::default(),
         }
     }
 
@@ -107,11 +137,26 @@ impl<'a> App<'a> {
         self.prefix_stack.last().cloned().unwrap_or_default()
     }
 
+    /// Parse a `bucket` or `bucket/prefix` argument into navigation state.
+    fn set_bucket_from_arg(&mut self, bucket_arg: String) {
+        let (bucket, prefix) = match bucket_arg.split_once('/') {
+            Some((b, p)) => (b.to_string(), p.trim_matches('/').to_string()),
+            None => (bucket_arg, String::new()),
+        };
+        self.current_bucket = bucket;
+        self.prefix_stack.clear();
+        self.prefix_stack.push(String::new());
+        if !prefix.is_empty() {
+            self.prefix_stack.push(format!("{prefix}/"));
+        }
+    }
+
     pub fn item_count(&self) -> usize {
         match self.view {
             View::Buckets => self.buckets.len(),
             View::Objects => self.entries.len(),
             View::FilePicker => self.picker_entries.len(),
+            View::ConfigSelector => self.configs.len(),
             _ => 0,
         }
     }
@@ -121,16 +166,14 @@ impl<'a> App<'a> {
         self.loading = true;
         terminal.draw(|frame| ui::draw(frame, &mut self))?;
 
-        if let Some(bucket_arg) = self.initial_bucket.take() {
-            let (bucket, prefix) = match bucket_arg.split_once('/') {
-                Some((b, p)) => (b.to_string(), p.trim_matches('/').to_string()),
-                None => (bucket_arg, String::new()),
-            };
-            self.current_bucket = bucket;
-            self.prefix_stack.push(String::new());
-            if !prefix.is_empty() {
-                self.prefix_stack.push(format!("{prefix}/"));
+        if self.view == View::ConfigSelector {
+            // Nothing to fetch yet; the selector is populated from self.configs.
+            self.loading = false;
+            if !self.configs.is_empty() {
+                self.list_state.select(Some(0));
             }
+        } else if let Some(bucket_arg) = self.initial_bucket.take() {
+            self.set_bucket_from_arg(bucket_arg);
             self.view = View::Objects;
             self.load_objects(&mut terminal).await?;
         } else {
@@ -159,12 +202,120 @@ impl<'a> App<'a> {
             View::CreateFolder => self.handle_create_folder_key(key.code, terminal).await?,
             View::CreateFile => self.handle_create_file_key(key.code, terminal).await?,
             View::FilePicker => self.handle_picker_key(key.code, terminal).await?,
+            View::ConfigSelector => self.handle_config_selector_key(key.code, terminal).await?,
+            View::ConfigForm => self.handle_config_form_key(key, terminal).await?,
             _ => {
                 self.error = None;
                 self.handle_list_key(key.code, terminal).await?;
             }
         }
         Ok(())
+    }
+
+    async fn handle_config_form_key(
+        &mut self,
+        key: KeyEvent,
+        _terminal: &mut DefaultTerminal,
+    ) -> Result<()> {
+        if key.code == KeyCode::Esc {
+            self.view = View::ConfigSelector;
+        }
+        Ok(())
+    }
+
+    async fn handle_config_selector_key(
+        &mut self,
+        code: KeyCode,
+        terminal: &mut DefaultTerminal,
+    ) -> Result<()> {
+        if self.config_delete_pending {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => self.delete_selected_config(),
+                _ => self.config_delete_pending = false,
+            }
+            return Ok(());
+        }
+        match code {
+            KeyCode::Char('q') | KeyCode::Esc => self.should_exit = true,
+            KeyCode::Down | KeyCode::Char('j') => self.select_next(),
+            KeyCode::Up | KeyCode::Char('k') => self.select_previous(),
+            KeyCode::Home | KeyCode::Char('g') => self.select_first(),
+            KeyCode::End | KeyCode::Char('G') => self.select_last(),
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                if let Some(i) = self.list_state.selected()
+                    && let Some(profile) = self.configs.get(i).cloned()
+                {
+                    self.error = None;
+                    self.apply_config(profile, terminal).await?;
+                }
+            }
+            KeyCode::Char('n') => {
+                self.config_form = ConfigForm::default();
+                self.error = None;
+                self.view = View::ConfigForm;
+            }
+            KeyCode::Char('d') | KeyCode::Delete => {
+                if !self.configs.is_empty() {
+                    self.config_delete_pending = true;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn apply_config(
+        &mut self,
+        profile: SavedProfile,
+        terminal: &mut DefaultTerminal,
+    ) -> Result<()> {
+        self.connection = ConnectionParams::from_profile(&profile);
+        self.client = s3::create_client(&self.connection).await;
+        self.buckets.clear();
+        self.entries.clear();
+        self.prefix_stack.clear();
+        self.list_state.select(None);
+
+        match profile.bucket.filter(|b| !b.is_empty()) {
+            Some(bucket_arg) => {
+                self.set_bucket_from_arg(bucket_arg);
+                self.view = View::Objects;
+                self.load_objects(terminal).await?;
+            }
+            None => {
+                self.view = View::Buckets;
+                self.load_buckets(terminal).await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn delete_selected_config(&mut self) {
+        self.config_delete_pending = false;
+        let Some(i) = self.list_state.selected() else {
+            return;
+        };
+        if i >= self.configs.len() {
+            return;
+        }
+        let removed = self.configs.remove(i);
+        let config = config::Config {
+            profiles: self.configs.clone(),
+        };
+        match config::save(&config) {
+            Ok(()) => {
+                self.error = Some(format!("Deleted config {}", removed.name));
+                if self.configs.is_empty() {
+                    self.list_state.select(None);
+                } else {
+                    self.list_state.select(Some(i.min(self.configs.len() - 1)));
+                }
+            }
+            Err(e) => {
+                self.configs.insert(i, removed);
+                self.error = Some(e);
+            }
+        }
     }
 
     async fn handle_list_key(
@@ -204,13 +355,11 @@ impl<'a> App<'a> {
                     self.open_file_picker();
                 }
             }
-            KeyCode::Char('r') => {
-                match self.view {
-                    View::Objects => self.load_objects(terminal).await?,
-                    View::Buckets => self.load_buckets(terminal).await?,
-                    _ => {}
-                }
-            }
+            KeyCode::Char('r') => match self.view {
+                View::Objects => self.load_objects(terminal).await?,
+                View::Buckets => self.load_buckets(terminal).await?,
+                _ => {}
+            },
             _ => {}
         }
         Ok(())
