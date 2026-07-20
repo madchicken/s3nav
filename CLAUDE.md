@@ -12,19 +12,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Format:** `cargo fmt`
 - **Check (fast compile check):** `cargo check`
 
-## Required Environment Variables
+## AWS Credentials
 
-The app requires `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` to be set. It will exit with an error if either is missing.
+Credentials are resolved by the AWS SDK (`aws-config`), so they may come from environment variables (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`), a named AWS profile (`--profile` or a saved configuration referencing one), or any other source the SDK supports. The app does not itself require the env vars to be set.
 
 ## Architecture
 
-TUI S3 file browser built with ratatui. Four modules:
+TUI S3 file browser built with ratatui. Five modules:
 
-- **main.rs** — Entry point. Validates env vars, parses CLI args (clap), creates S3 client, launches TUI.
-- **s3.rs** — AWS S3 client creation and operations (`list_buckets`, `list_objects`, `get_object_bytes`, `put_object`, `download_object`). Uses `aws-sdk-s3` with credentials loaded from environment via `aws-config`. Also contains `is_text_file` for extension-based file type detection.
-- **app.rs** — Application state machine. Five views: `Buckets`, `Objects`, `FilePreview`, `FileEdit`, `DownloadPrompt`. Manages navigation with a `prefix_stack` for folder drill-down/back. Handles keyboard events per-view. Uses `tui-textarea` for the editor.
-- **ui.rs** — Rendering layer. Draws header (current path), list (buckets or objects with icons), file preview with line numbers, editor via tui-textarea, and footer (keybindings/errors). Uses `StatefulWidget` for list selection.
+- **main.rs** — Entry point. Parses CLI args (clap), builds `ConnectionParams` from them, creates the S3 client, loads saved configs, and decides the start view: if any connection flag (`--profile`/`--region`/`--endpoint-url`/`--bucket`) is passed it connects directly; otherwise, if configs exist, it starts in the configuration selector.
+- **config.rs** — Persistence for saved configurations. `SavedProfile` (name + optional profile/region/endpoint_url/bucket — **no secrets**) and `Config { profiles }`, serialized as TOML to `dirs::config_dir()/s3nav/config.toml`. `load()` treats a missing file as empty and surfaces parse errors without overwriting.
+- **s3.rs** — AWS S3 client creation and operations (`list_buckets`, `list_objects`, `get_object_bytes`, `put_object`, `download_object`, etc.). `ConnectionParams` (profile/region/endpoint_url) decouples client creation from CLI `Args` so a saved profile can also build a client; `create_client` takes it. Also contains `is_text_file` for extension-based file type detection.
+- **app.rs** — Application state machine. Views include `Buckets`, `Objects`, `FilePreview`, `FileEdit`, `DownloadPrompt`, `DeleteConfirm`, `CreateFolder`, `CreateFile`, `FilePicker`, plus `ConfigSelector` and `ConfigForm`. Manages navigation with a `prefix_stack` for folder drill-down/back and handles keyboard events per-view. `ConfigForm` is a small multi-field text form with an in-field caret; `apply_config` rebuilds the client when a configuration is chosen. Uses `tui-textarea` for the file editor.
+- **ui.rs** — Rendering layer. Draws the header (current path on the left, active connection summary on the right), the list (buckets/objects/configs with icons), file preview with line numbers, the editor, the config form, and the footer (keybindings, errors, and confirmation prompts). Uses `StatefulWidget` for list selection.
 
 ## Navigation Model
 
-The app uses a stack-based prefix navigation. Entering a folder pushes the new prefix onto `prefix_stack`; going back pops it. When the stack is empty and the user goes back, it returns to the bucket list view.
+The app uses a stack-based prefix navigation. Entering a folder pushes the new prefix onto `prefix_stack`; going back pops it. `Backspace`/`h` go back through folders and, at a bucket root, return to the bucket list. `Esc` also goes back one folder level but, at the bucket root (or in the bucket list), asks for confirmation before quitting (`quit_pending`).
