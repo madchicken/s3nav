@@ -68,6 +68,7 @@ pub struct App<'a> {
     pub connection: ConnectionParams,
     pub config_delete_pending: bool,
     pub config_form: ConfigForm,
+    pub config_form_origin: View,
 }
 
 #[derive(Clone, Debug)]
@@ -191,6 +192,7 @@ impl<'a> App<'a> {
             connection,
             config_delete_pending: false,
             config_form: ConfigForm::default(),
+            config_form_origin: View::ConfigSelector,
         }
     }
 
@@ -286,7 +288,7 @@ impl<'a> App<'a> {
             KeyCode::Esc => {
                 self.config_form.clear();
                 self.error = None;
-                self.view = View::ConfigSelector;
+                self.view = self.config_form_origin.clone();
             }
             KeyCode::Tab | KeyCode::Down => self.config_form.next_field(),
             KeyCode::BackTab | KeyCode::Up => self.config_form.prev_field(),
@@ -294,7 +296,11 @@ impl<'a> App<'a> {
             KeyCode::Backspace => {
                 self.config_form.active_buf().pop();
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
                 self.config_form.active_buf().push(c);
             }
             _ => {}
@@ -324,8 +330,10 @@ impl<'a> App<'a> {
                 self.configs = profiles;
                 self.error = Some(format!("Saved config {}", profile.name));
                 self.config_form.clear();
-                self.view = View::ConfigSelector;
-                if let Some(i) = self.configs.iter().position(|p| p.name == profile.name) {
+                self.view = self.config_form_origin.clone();
+                if self.config_form_origin == View::ConfigSelector
+                    && let Some(i) = self.configs.iter().position(|p| p.name == profile.name)
+                {
                     self.list_state.select(Some(i));
                 }
             }
@@ -365,6 +373,7 @@ impl<'a> App<'a> {
             KeyCode::Char('n') => {
                 self.config_form = ConfigForm::default();
                 self.error = None;
+                self.config_form_origin = View::ConfigSelector;
                 self.view = View::ConfigForm;
             }
             KeyCode::Char('d') | KeyCode::Delete => {
@@ -469,6 +478,7 @@ impl<'a> App<'a> {
                     self.config_form =
                         ConfigForm::from_session(&self.connection, &self.current_bucket, &prefix);
                     self.error = None;
+                    self.config_form_origin = View::Buckets;
                     self.view = View::ConfigForm;
                 }
             }
