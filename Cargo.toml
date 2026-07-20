@@ -9,6 +9,7 @@ homepage = "https://github.com/madchicken/s3nav"
 keywords = ["s3", "tui", "aws", "terminal", "ratatui"]
 categories = ["command-line-utilities"]
 readme = "README.md"
+exclude = ["docs/superpowers/", ".superpowers/"]
 
 [dependencies]
 aws-config = "1"
