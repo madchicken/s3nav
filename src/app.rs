@@ -77,8 +77,6 @@ pub struct LocalEntry {
     pub size: u64,
 }
 
-// Fields are unused until Task 4 wires up the form's key handler.
-#[allow(dead_code)]
 #[derive(Default)]
 pub struct ConfigForm {
     pub name: String,
@@ -87,6 +85,69 @@ pub struct ConfigForm {
     pub endpoint_url: String,
     pub bucket: String,
     pub field: usize,
+}
+
+impl ConfigForm {
+    const FIELDS: usize = 5;
+
+    fn next_field(&mut self) {
+        self.field = (self.field + 1) % Self::FIELDS;
+    }
+
+    fn prev_field(&mut self) {
+        self.field = (self.field + Self::FIELDS - 1) % Self::FIELDS;
+    }
+
+    fn active_buf(&mut self) -> &mut String {
+        match self.field {
+            0 => &mut self.name,
+            1 => &mut self.profile,
+            2 => &mut self.region,
+            3 => &mut self.endpoint_url,
+            _ => &mut self.bucket,
+        }
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn to_profile(&self) -> SavedProfile {
+        let opt = |s: &str| {
+            let t = s.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        };
+        SavedProfile {
+            name: self.name.trim().to_string(),
+            profile: opt(&self.profile),
+            region: opt(&self.region),
+            endpoint_url: opt(&self.endpoint_url),
+            bucket: opt(&self.bucket),
+        }
+    }
+
+    /// Pre-fill from the currently active session (for "save current session").
+    fn from_session(conn: &ConnectionParams, bucket: &str, prefix: &str) -> Self {
+        let bucket_field = if bucket.is_empty() {
+            String::new()
+        } else if prefix.is_empty() {
+            bucket.to_string()
+        } else {
+            format!("{}/{}", bucket, prefix.trim_end_matches('/'))
+        };
+        Self {
+            name: String::new(),
+            profile: conn.profile.clone().unwrap_or_default(),
+            region: conn.region.clone().unwrap_or_default(),
+            endpoint_url: conn.endpoint_url.clone().unwrap_or_default(),
+            bucket: bucket_field,
+            field: 0,
+        }
+    }
 }
 
 impl<'a> App<'a> {
@@ -215,11 +276,63 @@ impl<'a> App<'a> {
     async fn handle_config_form_key(
         &mut self,
         key: KeyEvent,
-        _terminal: &mut DefaultTerminal,
+        terminal: &mut DefaultTerminal,
     ) -> Result<()> {
-        if key.code == KeyCode::Esc {
-            self.view = View::ConfigSelector;
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+            self.save_config_form(terminal).await?;
+            return Ok(());
         }
+        match key.code {
+            KeyCode::Esc => {
+                self.config_form.clear();
+                self.error = None;
+                self.view = View::ConfigSelector;
+            }
+            KeyCode::Tab | KeyCode::Down => self.config_form.next_field(),
+            KeyCode::BackTab | KeyCode::Up => self.config_form.prev_field(),
+            KeyCode::Enter => self.save_config_form(terminal).await?,
+            KeyCode::Backspace => {
+                self.config_form.active_buf().pop();
+            }
+            KeyCode::Char(c) => {
+                self.config_form.active_buf().push(c);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn save_config_form(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let profile = self.config_form.to_profile();
+        if profile.name.is_empty() {
+            self.error = Some("Config name is required".into());
+            return Ok(());
+        }
+
+        let mut profiles = self.configs.clone();
+        if let Some(existing) = profiles.iter_mut().find(|p| p.name == profile.name) {
+            *existing = profile.clone();
+        } else {
+            profiles.push(profile.clone());
+        }
+        let config = config::Config {
+            profiles: profiles.clone(),
+        };
+
+        match config::save(&config) {
+            Ok(()) => {
+                self.configs = profiles;
+                self.error = Some(format!("Saved config {}", profile.name));
+                self.config_form.clear();
+                self.view = View::ConfigSelector;
+                if let Some(i) = self.configs.iter().position(|p| p.name == profile.name) {
+                    self.list_state.select(Some(i));
+                }
+            }
+            Err(e) => self.error = Some(e),
+        }
+        // Redraw promptly so the result is visible.
+        terminal.draw(|frame| ui::draw(frame, self))?;
         Ok(())
     }
 
@@ -348,6 +461,15 @@ impl<'a> App<'a> {
                 if self.view == View::Objects {
                     self.new_file_input.clear();
                     self.view = View::CreateFile;
+                }
+            }
+            KeyCode::Char('s') => {
+                if self.view == View::Buckets {
+                    let prefix = self.current_prefix();
+                    self.config_form =
+                        ConfigForm::from_session(&self.connection, &self.current_bucket, &prefix);
+                    self.error = None;
+                    self.view = View::ConfigForm;
                 }
             }
             KeyCode::Char('u') => {
@@ -992,5 +1114,28 @@ impl<'a> App<'a> {
         }
         self.loading = false;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_form_to_profile_trims_and_nullifies_empty() {
+        let form = ConfigForm {
+            name: "  prod ".into(),
+            profile: "   ".into(),
+            region: "eu-west-1".into(),
+            endpoint_url: String::new(),
+            bucket: "b/p".into(),
+            field: 0,
+        };
+        let p = form.to_profile();
+        assert_eq!(p.name, "prod");
+        assert_eq!(p.profile, None);
+        assert_eq!(p.region.as_deref(), Some("eu-west-1"));
+        assert_eq!(p.endpoint_url, None);
+        assert_eq!(p.bucket.as_deref(), Some("b/p"));
     }
 }

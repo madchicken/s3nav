@@ -36,6 +36,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             draw_detail_panel(frame, app, detail_area);
         }
         View::FilePicker => draw_file_picker(frame, app, main_area),
+        View::ConfigForm => draw_config_form(frame, app, main_area),
         _ => draw_list(frame, app, main_area),
     }
 
@@ -292,6 +293,56 @@ fn draw_file_picker(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rec
         .highlight_spacing(HighlightSpacing::Always);
 
     StatefulWidget::render(list, area, frame.buffer_mut(), &mut app.picker_state);
+}
+
+fn draw_config_form(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+    let labels = [
+        "Name",
+        "AWS profile",
+        "Region",
+        "Endpoint URL",
+        "Bucket/prefix",
+    ];
+    let values = [
+        &app.config_form.name,
+        &app.config_form.profile,
+        &app.config_form.region,
+        &app.config_form.endpoint_url,
+        &app.config_form.bucket,
+    ];
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+    for (i, (label, value)) in labels.iter().zip(values.iter()).enumerate() {
+        let active = i == app.config_form.field;
+        let marker = if active { "▶ " } else { "  " };
+        let label_style = if active {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        let cursor = if active { "█" } else { "" };
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(Color::Cyan)),
+            Span::styled(format!("{label:>13}: "), label_style),
+            Span::raw(value.as_str()),
+            Span::styled(cursor, Style::default().fg(Color::White)),
+        ]));
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(Span::styled(
+        "  Name is required. profile/region/endpoint/bucket are optional.",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(" Configuration ");
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
 }
 
 fn draw_detail_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -576,6 +627,14 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(" delete  "),
             Span::styled("q", Style::default().fg(Color::Cyan)),
             Span::raw(" quit"),
+        ])),
+        View::ConfigForm => Paragraph::new(Line::from(vec![
+            Span::styled(" Tab/↑↓", Style::default().fg(Color::Cyan)),
+            Span::raw(" field  "),
+            Span::styled("Enter/Ctrl+S", Style::default().fg(Color::Cyan)),
+            Span::raw(" save  "),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" cancel"),
         ])),
         _ => Paragraph::new(Line::from(vec![
             Span::styled(" ↑↓/jk", Style::default().fg(Color::Cyan)),
