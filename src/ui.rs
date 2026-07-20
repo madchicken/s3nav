@@ -650,6 +650,24 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::styled("Esc", Style::default().fg(Color::Cyan)),
             Span::raw(" cancel"),
         ])),
+        View::Buckets if app.configs.is_empty() => Paragraph::new(Line::from(vec![
+            Span::styled(
+                " No saved configurations — press ",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled(
+                "s",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " to save this session as one    ",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled("q/Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" quit"),
+        ])),
         View::Buckets => Paragraph::new(Line::from(vec![
             Span::styled(" ↑↓/jk", Style::default().fg(Color::Cyan)),
             Span::raw(" navigate  "),
