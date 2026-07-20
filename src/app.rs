@@ -88,6 +88,8 @@ pub struct ConfigForm {
     pub endpoint_url: String,
     pub bucket: String,
     pub field: usize,
+    /// Caret position within the active field, counted in characters.
+    pub cursor: usize,
 }
 
 impl ConfigForm {
@@ -95,10 +97,12 @@ impl ConfigForm {
 
     fn next_field(&mut self) {
         self.field = (self.field + 1) % Self::FIELDS;
+        self.cursor = self.active_str().chars().count();
     }
 
     fn prev_field(&mut self) {
         self.field = (self.field + Self::FIELDS - 1) % Self::FIELDS;
+        self.cursor = self.active_str().chars().count();
     }
 
     fn active_buf(&mut self) -> &mut String {
@@ -109,6 +113,71 @@ impl ConfigForm {
             3 => &mut self.endpoint_url,
             _ => &mut self.bucket,
         }
+    }
+
+    fn active_str(&self) -> &str {
+        match self.field {
+            0 => &self.name,
+            1 => &self.profile,
+            2 => &self.region,
+            3 => &self.endpoint_url,
+            _ => &self.bucket,
+        }
+    }
+
+    /// Byte offset of the `char_idx`-th character (or the end of the string).
+    fn byte_at(s: &str, char_idx: usize) -> usize {
+        s.char_indices()
+            .nth(char_idx)
+            .map(|(b, _)| b)
+            .unwrap_or(s.len())
+    }
+
+    fn insert_char(&mut self, c: char) {
+        let cursor = self.cursor;
+        let buf = self.active_buf();
+        let byte = Self::byte_at(buf, cursor);
+        buf.insert(byte, c);
+        self.cursor += 1;
+    }
+
+    /// Delete the character before the caret (Backspace).
+    fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let target = self.cursor - 1;
+        let buf = self.active_buf();
+        if let Some((byte, ch)) = buf.char_indices().nth(target) {
+            buf.replace_range(byte..byte + ch.len_utf8(), "");
+            self.cursor -= 1;
+        }
+    }
+
+    /// Delete the character at the caret (Delete), leaving the caret in place.
+    fn delete_forward(&mut self) {
+        let target = self.cursor;
+        let buf = self.active_buf();
+        if let Some((byte, ch)) = buf.char_indices().nth(target) {
+            buf.replace_range(byte..byte + ch.len_utf8(), "");
+        }
+    }
+
+    fn move_left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    fn move_right(&mut self) {
+        let len = self.active_str().chars().count();
+        self.cursor = (self.cursor + 1).min(len);
+    }
+
+    fn move_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn move_end(&mut self) {
+        self.cursor = self.active_str().chars().count();
     }
 
     fn clear(&mut self) {
@@ -149,6 +218,7 @@ impl ConfigForm {
             endpoint_url: conn.endpoint_url.clone().unwrap_or_default(),
             bucket: bucket_field,
             field: 0,
+            cursor: 0,
         }
     }
 
@@ -161,6 +231,7 @@ impl ConfigForm {
             endpoint_url: p.endpoint_url.clone().unwrap_or_default(),
             bucket: p.bucket.clone().unwrap_or_default(),
             field: 0,
+            cursor: p.name.chars().count(),
         }
     }
 }
@@ -308,16 +379,19 @@ impl<'a> App<'a> {
             }
             KeyCode::Tab | KeyCode::Down => self.config_form.next_field(),
             KeyCode::BackTab | KeyCode::Up => self.config_form.prev_field(),
+            KeyCode::Left => self.config_form.move_left(),
+            KeyCode::Right => self.config_form.move_right(),
+            KeyCode::Home => self.config_form.move_home(),
+            KeyCode::End => self.config_form.move_end(),
             KeyCode::Enter => self.save_config_form(terminal).await?,
-            KeyCode::Backspace => {
-                self.config_form.active_buf().pop();
-            }
+            KeyCode::Backspace => self.config_form.backspace(),
+            KeyCode::Delete => self.config_form.delete_forward(),
             KeyCode::Char(c)
                 if !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                self.config_form.active_buf().push(c);
+                self.config_form.insert_char(c);
             }
             _ => {}
         }
@@ -1177,6 +1251,7 @@ mod tests {
             endpoint_url: String::new(),
             bucket: "b/p".into(),
             field: 0,
+            cursor: 0,
         };
         let p = form.to_profile();
         assert_eq!(p.name, "prod");
@@ -1202,5 +1277,42 @@ mod tests {
         assert_eq!(form.field, 0);
         // Editing nothing and saving reproduces the original profile.
         assert_eq!(form.to_profile(), original);
+    }
+
+    #[test]
+    fn config_form_cursor_editing() {
+        let mut form = ConfigForm::default();
+        // field 0 (name), cursor 0
+        form.insert_char('a');
+        form.insert_char('c');
+        assert_eq!(form.name, "ac");
+        assert_eq!(form.cursor, 2);
+        // Move caret between the two chars and insert.
+        form.move_left();
+        assert_eq!(form.cursor, 1);
+        form.insert_char('b');
+        assert_eq!(form.name, "abc");
+        assert_eq!(form.cursor, 2);
+        // Backspace removes the char before the caret ('b').
+        form.backspace();
+        assert_eq!(form.name, "ac");
+        assert_eq!(form.cursor, 1);
+        // Delete removes the char at the caret ('c'), caret stays.
+        form.delete_forward();
+        assert_eq!(form.name, "a");
+        assert_eq!(form.cursor, 1);
+        // Home/End bounds.
+        form.move_home();
+        assert_eq!(form.cursor, 0);
+        form.move_left();
+        assert_eq!(form.cursor, 0);
+        form.move_end();
+        assert_eq!(form.cursor, 1);
+        form.move_right();
+        assert_eq!(form.cursor, 1);
+        // Switching fields moves the caret to the end of the new field.
+        form.next_field();
+        assert_eq!(form.field, 1);
+        assert_eq!(form.cursor, 0);
     }
 }

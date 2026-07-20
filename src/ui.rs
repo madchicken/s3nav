@@ -343,13 +343,31 @@ fn draw_config_form(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rec
         } else {
             Style::default().fg(Color::Gray)
         };
-        let cursor = if active { "█" } else { "" };
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::styled(marker, Style::default().fg(Color::Cyan)),
             Span::styled(format!("{label:>13}: "), label_style),
-            Span::raw(value.as_str()),
-            Span::styled(cursor, Style::default().fg(Color::White)),
-        ]));
+        ];
+        if active {
+            // Render the value with the caret drawn over the character at the
+            // cursor position (or a trailing block when the caret is at the end).
+            let chars: Vec<char> = value.chars().collect();
+            let cur = app.config_form.cursor.min(chars.len());
+            let before: String = chars[..cur].iter().collect();
+            let (at, after) = if cur < chars.len() {
+                (chars[cur].to_string(), chars[cur + 1..].iter().collect())
+            } else {
+                (" ".to_string(), String::new())
+            };
+            spans.push(Span::raw(before));
+            spans.push(Span::styled(
+                at,
+                Style::default().add_modifier(Modifier::REVERSED),
+            ));
+            spans.push(Span::raw(after));
+        } else {
+            spans.push(Span::raw(value.as_str()));
+        }
+        lines.push(Line::from(spans));
         lines.push(Line::from(""));
     }
     lines.push(Line::from(Span::styled(
