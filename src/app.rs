@@ -69,6 +69,8 @@ pub struct App<'a> {
     pub config_delete_pending: bool,
     pub config_form: ConfigForm,
     pub config_form_origin: View,
+    /// When editing an existing config, its index in `configs`; `None` for a new config.
+    pub config_form_edit_index: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -149,6 +151,18 @@ impl ConfigForm {
             field: 0,
         }
     }
+
+    /// Pre-fill from an existing saved config (for editing it).
+    fn from_profile(p: &SavedProfile) -> Self {
+        Self {
+            name: p.name.clone(),
+            profile: p.profile.clone().unwrap_or_default(),
+            region: p.region.clone().unwrap_or_default(),
+            endpoint_url: p.endpoint_url.clone().unwrap_or_default(),
+            bucket: p.bucket.clone().unwrap_or_default(),
+            field: 0,
+        }
+    }
 }
 
 impl<'a> App<'a> {
@@ -193,6 +207,7 @@ impl<'a> App<'a> {
             config_delete_pending: false,
             config_form: ConfigForm::default(),
             config_form_origin: View::ConfigSelector,
+            config_form_edit_index: None,
         }
     }
 
@@ -288,6 +303,7 @@ impl<'a> App<'a> {
             KeyCode::Esc => {
                 self.config_form.clear();
                 self.error = None;
+                self.config_form_edit_index = None;
                 self.view = self.config_form_origin.clone();
             }
             KeyCode::Tab | KeyCode::Down => self.config_form.next_field(),
@@ -316,10 +332,17 @@ impl<'a> App<'a> {
         }
 
         let mut profiles = self.configs.clone();
-        if let Some(existing) = profiles.iter_mut().find(|p| p.name == profile.name) {
-            *existing = profile.clone();
-        } else {
-            profiles.push(profile.clone());
+        match self.config_form_edit_index {
+            // Editing an existing config: replace it in place (allows renaming).
+            Some(i) if i < profiles.len() => profiles[i] = profile.clone(),
+            // New config (or save-session): replace by name if present, else append.
+            _ => {
+                if let Some(existing) = profiles.iter_mut().find(|p| p.name == profile.name) {
+                    *existing = profile.clone();
+                } else {
+                    profiles.push(profile.clone());
+                }
+            }
         }
         let config = config::Config {
             profiles: profiles.clone(),
@@ -330,6 +353,7 @@ impl<'a> App<'a> {
                 self.configs = profiles;
                 self.error = Some(format!("Saved config {}", profile.name));
                 self.config_form.clear();
+                self.config_form_edit_index = None;
                 self.view = self.config_form_origin.clone();
                 if self.config_form_origin == View::ConfigSelector
                     && let Some(i) = self.configs.iter().position(|p| p.name == profile.name)
@@ -374,7 +398,19 @@ impl<'a> App<'a> {
                 self.config_form = ConfigForm::default();
                 self.error = None;
                 self.config_form_origin = View::ConfigSelector;
+                self.config_form_edit_index = None;
                 self.view = View::ConfigForm;
+            }
+            KeyCode::Char('e') => {
+                if let Some(i) = self.list_state.selected()
+                    && let Some(profile) = self.configs.get(i)
+                {
+                    self.config_form = ConfigForm::from_profile(profile);
+                    self.error = None;
+                    self.config_form_origin = View::ConfigSelector;
+                    self.config_form_edit_index = Some(i);
+                    self.view = View::ConfigForm;
+                }
             }
             KeyCode::Char('d') | KeyCode::Delete => {
                 if !self.configs.is_empty() {
@@ -479,6 +515,7 @@ impl<'a> App<'a> {
                         ConfigForm::from_session(&self.connection, &self.current_bucket, &prefix);
                     self.error = None;
                     self.config_form_origin = View::Buckets;
+                    self.config_form_edit_index = None;
                     self.view = View::ConfigForm;
                 }
             }
@@ -1147,5 +1184,23 @@ mod tests {
         assert_eq!(p.region.as_deref(), Some("eu-west-1"));
         assert_eq!(p.endpoint_url, None);
         assert_eq!(p.bucket.as_deref(), Some("b/p"));
+    }
+
+    #[test]
+    fn config_form_from_profile_round_trips() {
+        let original = SavedProfile {
+            name: "prod".into(),
+            profile: Some("prod-acct".into()),
+            region: Some("eu-west-1".into()),
+            endpoint_url: None,
+            bucket: Some("my-bucket/data".into()),
+        };
+        let form = ConfigForm::from_profile(&original);
+        // Absent optional fields become empty strings in the form.
+        assert_eq!(form.name, "prod");
+        assert_eq!(form.endpoint_url, "");
+        assert_eq!(form.field, 0);
+        // Editing nothing and saving reproduces the original profile.
+        assert_eq!(form.to_profile(), original);
     }
 }

@@ -73,7 +73,13 @@ fn draw_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             format!(" Upload from: {}", app.picker_dir.display())
         }
         View::ConfigSelector => " Select configuration".to_string(),
-        View::ConfigForm => " New configuration".to_string(),
+        View::ConfigForm => {
+            if app.config_form_edit_index.is_some() {
+                " Edit configuration".to_string()
+            } else {
+                " New configuration".to_string()
+            }
+        }
     };
 
     let status = if app.loading { " Loading..." } else { "" };
@@ -637,6 +643,8 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(" connect  "),
             Span::styled("n", Style::default().fg(Color::Cyan)),
             Span::raw(" new  "),
+            Span::styled("e", Style::default().fg(Color::Cyan)),
+            Span::raw(" edit  "),
             Span::styled("d", Style::default().fg(Color::Cyan)),
             Span::raw(" delete  "),
             Span::styled("q", Style::default().fg(Color::Cyan)),
