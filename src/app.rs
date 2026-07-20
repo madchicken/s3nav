@@ -7,7 +7,8 @@ use ratatui::DefaultTerminal;
 use ratatui::widgets::ListState;
 use tui_textarea::TextArea;
 
-use crate::s3::{self, S3Entry};
+use crate::config::{self, SavedProfile};
+use crate::s3::{self, ConnectionParams, S3Entry};
 use crate::ui;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +22,8 @@ pub enum View {
     CreateFolder,
     CreateFile,
     FilePicker,
+    ConfigSelector,
+    ConfigForm,
 }
 
 pub struct App<'a> {
@@ -59,6 +62,13 @@ pub struct App<'a> {
     pub picker_dir: PathBuf,
     pub picker_entries: Vec<LocalEntry>,
     pub picker_state: ListState,
+
+    // Saved configurations
+    pub configs: Vec<SavedProfile>,
+    pub connection: ConnectionParams,
+    pub config_delete_pending: bool,
+    pub config_form: ConfigForm,
+    pub config_form_origin: View,
 }
 
 #[derive(Clone, Debug)]
@@ -68,8 +78,86 @@ pub struct LocalEntry {
     pub size: u64,
 }
 
+#[derive(Default)]
+pub struct ConfigForm {
+    pub name: String,
+    pub profile: String,
+    pub region: String,
+    pub endpoint_url: String,
+    pub bucket: String,
+    pub field: usize,
+}
+
+impl ConfigForm {
+    const FIELDS: usize = 5;
+
+    fn next_field(&mut self) {
+        self.field = (self.field + 1) % Self::FIELDS;
+    }
+
+    fn prev_field(&mut self) {
+        self.field = (self.field + Self::FIELDS - 1) % Self::FIELDS;
+    }
+
+    fn active_buf(&mut self) -> &mut String {
+        match self.field {
+            0 => &mut self.name,
+            1 => &mut self.profile,
+            2 => &mut self.region,
+            3 => &mut self.endpoint_url,
+            _ => &mut self.bucket,
+        }
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn to_profile(&self) -> SavedProfile {
+        let opt = |s: &str| {
+            let t = s.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        };
+        SavedProfile {
+            name: self.name.trim().to_string(),
+            profile: opt(&self.profile),
+            region: opt(&self.region),
+            endpoint_url: opt(&self.endpoint_url),
+            bucket: opt(&self.bucket),
+        }
+    }
+
+    /// Pre-fill from the currently active session (for "save current session").
+    fn from_session(conn: &ConnectionParams, bucket: &str, prefix: &str) -> Self {
+        let bucket_field = if bucket.is_empty() {
+            String::new()
+        } else if prefix.is_empty() {
+            bucket.to_string()
+        } else {
+            format!("{}/{}", bucket, prefix.trim_end_matches('/'))
+        };
+        Self {
+            name: String::new(),
+            profile: conn.profile.clone().unwrap_or_default(),
+            region: conn.region.clone().unwrap_or_default(),
+            endpoint_url: conn.endpoint_url.clone().unwrap_or_default(),
+            bucket: bucket_field,
+            field: 0,
+        }
+    }
+}
+
 impl<'a> App<'a> {
-    pub fn new(client: Client, initial_bucket: Option<String>) -> Self {
+    pub fn new(
+        client: Client,
+        connection: ConnectionParams,
+        initial_bucket: Option<String>,
+        configs: Vec<SavedProfile>,
+    ) -> Self {
         Self {
             client,
             should_exit: false,
@@ -100,6 +188,11 @@ impl<'a> App<'a> {
             picker_dir: PathBuf::new(),
             picker_entries: vec![],
             picker_state: ListState::default(),
+            configs,
+            connection,
+            config_delete_pending: false,
+            config_form: ConfigForm::default(),
+            config_form_origin: View::ConfigSelector,
         }
     }
 
@@ -107,11 +200,26 @@ impl<'a> App<'a> {
         self.prefix_stack.last().cloned().unwrap_or_default()
     }
 
+    /// Parse a `bucket` or `bucket/prefix` argument into navigation state.
+    fn set_bucket_from_arg(&mut self, bucket_arg: String) {
+        let (bucket, prefix) = match bucket_arg.split_once('/') {
+            Some((b, p)) => (b.to_string(), p.trim_matches('/').to_string()),
+            None => (bucket_arg, String::new()),
+        };
+        self.current_bucket = bucket;
+        self.prefix_stack.clear();
+        self.prefix_stack.push(String::new());
+        if !prefix.is_empty() {
+            self.prefix_stack.push(format!("{prefix}/"));
+        }
+    }
+
     pub fn item_count(&self) -> usize {
         match self.view {
             View::Buckets => self.buckets.len(),
             View::Objects => self.entries.len(),
             View::FilePicker => self.picker_entries.len(),
+            View::ConfigSelector => self.configs.len(),
             _ => 0,
         }
     }
@@ -121,16 +229,14 @@ impl<'a> App<'a> {
         self.loading = true;
         terminal.draw(|frame| ui::draw(frame, &mut self))?;
 
-        if let Some(bucket_arg) = self.initial_bucket.take() {
-            let (bucket, prefix) = match bucket_arg.split_once('/') {
-                Some((b, p)) => (b.to_string(), p.trim_matches('/').to_string()),
-                None => (bucket_arg, String::new()),
-            };
-            self.current_bucket = bucket;
-            self.prefix_stack.push(String::new());
-            if !prefix.is_empty() {
-                self.prefix_stack.push(format!("{prefix}/"));
+        if self.view == View::ConfigSelector {
+            // Nothing to fetch yet; the selector is populated from self.configs.
+            self.loading = false;
+            if !self.configs.is_empty() {
+                self.list_state.select(Some(0));
             }
+        } else if let Some(bucket_arg) = self.initial_bucket.take() {
+            self.set_bucket_from_arg(bucket_arg);
             self.view = View::Objects;
             self.load_objects(&mut terminal).await?;
         } else {
@@ -159,12 +265,179 @@ impl<'a> App<'a> {
             View::CreateFolder => self.handle_create_folder_key(key.code, terminal).await?,
             View::CreateFile => self.handle_create_file_key(key.code, terminal).await?,
             View::FilePicker => self.handle_picker_key(key.code, terminal).await?,
+            View::ConfigSelector => self.handle_config_selector_key(key.code, terminal).await?,
+            View::ConfigForm => self.handle_config_form_key(key, terminal).await?,
             _ => {
                 self.error = None;
                 self.handle_list_key(key.code, terminal).await?;
             }
         }
         Ok(())
+    }
+
+    async fn handle_config_form_key(
+        &mut self,
+        key: KeyEvent,
+        terminal: &mut DefaultTerminal,
+    ) -> Result<()> {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+            self.save_config_form(terminal).await?;
+            return Ok(());
+        }
+        match key.code {
+            KeyCode::Esc => {
+                self.config_form.clear();
+                self.error = None;
+                self.view = self.config_form_origin.clone();
+            }
+            KeyCode::Tab | KeyCode::Down => self.config_form.next_field(),
+            KeyCode::BackTab | KeyCode::Up => self.config_form.prev_field(),
+            KeyCode::Enter => self.save_config_form(terminal).await?,
+            KeyCode::Backspace => {
+                self.config_form.active_buf().pop();
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.config_form.active_buf().push(c);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn save_config_form(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let profile = self.config_form.to_profile();
+        if profile.name.is_empty() {
+            self.error = Some("Config name is required".into());
+            return Ok(());
+        }
+
+        let mut profiles = self.configs.clone();
+        if let Some(existing) = profiles.iter_mut().find(|p| p.name == profile.name) {
+            *existing = profile.clone();
+        } else {
+            profiles.push(profile.clone());
+        }
+        let config = config::Config {
+            profiles: profiles.clone(),
+        };
+
+        match config::save(&config) {
+            Ok(()) => {
+                self.configs = profiles;
+                self.error = Some(format!("Saved config {}", profile.name));
+                self.config_form.clear();
+                self.view = self.config_form_origin.clone();
+                if self.config_form_origin == View::ConfigSelector
+                    && let Some(i) = self.configs.iter().position(|p| p.name == profile.name)
+                {
+                    self.list_state.select(Some(i));
+                }
+            }
+            Err(e) => self.error = Some(e),
+        }
+        // Redraw promptly so the result is visible.
+        terminal.draw(|frame| ui::draw(frame, self))?;
+        Ok(())
+    }
+
+    async fn handle_config_selector_key(
+        &mut self,
+        code: KeyCode,
+        terminal: &mut DefaultTerminal,
+    ) -> Result<()> {
+        if self.config_delete_pending {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => self.delete_selected_config(),
+                _ => self.config_delete_pending = false,
+            }
+            return Ok(());
+        }
+        match code {
+            KeyCode::Char('q') | KeyCode::Esc => self.should_exit = true,
+            KeyCode::Down | KeyCode::Char('j') => self.select_next(),
+            KeyCode::Up | KeyCode::Char('k') => self.select_previous(),
+            KeyCode::Home | KeyCode::Char('g') => self.select_first(),
+            KeyCode::End | KeyCode::Char('G') => self.select_last(),
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                if let Some(i) = self.list_state.selected()
+                    && let Some(profile) = self.configs.get(i).cloned()
+                {
+                    self.error = None;
+                    self.apply_config(profile, terminal).await?;
+                }
+            }
+            KeyCode::Char('n') => {
+                self.config_form = ConfigForm::default();
+                self.error = None;
+                self.config_form_origin = View::ConfigSelector;
+                self.view = View::ConfigForm;
+            }
+            KeyCode::Char('d') | KeyCode::Delete => {
+                if !self.configs.is_empty() {
+                    self.config_delete_pending = true;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn apply_config(
+        &mut self,
+        profile: SavedProfile,
+        terminal: &mut DefaultTerminal,
+    ) -> Result<()> {
+        self.connection = ConnectionParams::from_profile(&profile);
+        self.client = s3::create_client(&self.connection).await;
+        self.buckets.clear();
+        self.entries.clear();
+        self.prefix_stack.clear();
+        self.list_state.select(None);
+
+        match profile.bucket.filter(|b| !b.is_empty()) {
+            Some(bucket_arg) => {
+                self.set_bucket_from_arg(bucket_arg);
+                self.view = View::Objects;
+                self.load_objects(terminal).await?;
+            }
+            None => {
+                self.view = View::Buckets;
+                self.load_buckets(terminal).await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn delete_selected_config(&mut self) {
+        self.config_delete_pending = false;
+        let Some(i) = self.list_state.selected() else {
+            return;
+        };
+        if i >= self.configs.len() {
+            return;
+        }
+        let removed = self.configs.remove(i);
+        let config = config::Config {
+            profiles: self.configs.clone(),
+        };
+        match config::save(&config) {
+            Ok(()) => {
+                self.error = Some(format!("Deleted config {}", removed.name));
+                if self.configs.is_empty() {
+                    self.list_state.select(None);
+                } else {
+                    self.list_state.select(Some(i.min(self.configs.len() - 1)));
+                }
+            }
+            Err(e) => {
+                self.configs.insert(i, removed);
+                self.error = Some(e);
+            }
+        }
     }
 
     async fn handle_list_key(
@@ -199,18 +472,26 @@ impl<'a> App<'a> {
                     self.view = View::CreateFile;
                 }
             }
+            KeyCode::Char('s') => {
+                if self.view == View::Buckets {
+                    let prefix = self.current_prefix();
+                    self.config_form =
+                        ConfigForm::from_session(&self.connection, &self.current_bucket, &prefix);
+                    self.error = None;
+                    self.config_form_origin = View::Buckets;
+                    self.view = View::ConfigForm;
+                }
+            }
             KeyCode::Char('u') => {
                 if self.view == View::Objects {
                     self.open_file_picker();
                 }
             }
-            KeyCode::Char('r') => {
-                match self.view {
-                    View::Objects => self.load_objects(terminal).await?,
-                    View::Buckets => self.load_buckets(terminal).await?,
-                    _ => {}
-                }
-            }
+            KeyCode::Char('r') => match self.view {
+                View::Objects => self.load_objects(terminal).await?,
+                View::Buckets => self.load_buckets(terminal).await?,
+                _ => {}
+            },
             _ => {}
         }
         Ok(())
@@ -843,5 +1124,28 @@ impl<'a> App<'a> {
         }
         self.loading = false;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_form_to_profile_trims_and_nullifies_empty() {
+        let form = ConfigForm {
+            name: "  prod ".into(),
+            profile: "   ".into(),
+            region: "eu-west-1".into(),
+            endpoint_url: String::new(),
+            bucket: "b/p".into(),
+            field: 0,
+        };
+        let p = form.to_profile();
+        assert_eq!(p.name, "prod");
+        assert_eq!(p.profile, None);
+        assert_eq!(p.region.as_deref(), Some("eu-west-1"));
+        assert_eq!(p.endpoint_url, None);
+        assert_eq!(p.bucket.as_deref(), Some("b/p"));
     }
 }

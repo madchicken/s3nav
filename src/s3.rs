@@ -4,19 +4,56 @@ use aws_sdk_s3::Client;
 use aws_sdk_s3::primitives::ByteStream;
 
 use crate::Args;
+use crate::config::SavedProfile;
 
-pub async fn create_client(args: &Args) -> Client {
+/// Connection settings usable to build an S3 client, from either CLI args or a
+/// saved profile.
+#[derive(Clone, Debug, Default)]
+pub struct ConnectionParams {
+    pub profile: Option<String>,
+    pub region: Option<String>,
+    pub endpoint_url: Option<String>,
+}
+
+impl ConnectionParams {
+    pub fn from_args(args: &Args) -> Self {
+        Self {
+            profile: args.profile.clone(),
+            region: args.region.clone(),
+            endpoint_url: args.endpoint_url.clone(),
+        }
+    }
+
+    pub fn from_profile(p: &SavedProfile) -> Self {
+        Self {
+            profile: p.profile.clone(),
+            region: p.region.clone(),
+            endpoint_url: p.endpoint_url.clone(),
+        }
+    }
+
+    /// One-line summary of the active connection for display in the header.
+    /// Missing values fall back to "AWS" (endpoint) or "default" (region/profile).
+    pub fn summary(&self) -> String {
+        let endpoint = self.endpoint_url.as_deref().unwrap_or("AWS");
+        let region = self.region.as_deref().unwrap_or("default");
+        let profile = self.profile.as_deref().unwrap_or("default");
+        format!("{endpoint} · {region} · {profile}")
+    }
+}
+
+pub async fn create_client(params: &ConnectionParams) -> Client {
     let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
 
-    if let Some(profile) = &args.profile {
+    if let Some(profile) = &params.profile {
         config_loader = config_loader.profile_name(profile);
     }
 
-    if let Some(region) = &args.region {
+    if let Some(region) = &params.region {
         config_loader = config_loader.region(aws_config::Region::new(region.clone()));
     }
 
-    if let Some(endpoint) = &args.endpoint_url {
+    if let Some(endpoint) = &params.endpoint_url {
         config_loader = config_loader.endpoint_url(endpoint);
     }
 
@@ -47,10 +84,7 @@ pub async fn list_objects(
     let mut continuation_token: Option<String> = None;
 
     loop {
-        let mut req = client
-            .list_objects_v2()
-            .bucket(bucket)
-            .delimiter("/");
+        let mut req = client.list_objects_v2().bucket(bucket).delimiter("/");
 
         if !prefix.is_empty() {
             req = req.prefix(prefix);
@@ -67,10 +101,7 @@ pub async fn list_objects(
         // Folders (common prefixes)
         for cp in resp.common_prefixes() {
             if let Some(p) = cp.prefix() {
-                let name = p
-                    .strip_prefix(prefix)
-                    .unwrap_or(p)
-                    .trim_end_matches('/');
+                let name = p.strip_prefix(prefix).unwrap_or(p).trim_end_matches('/');
                 if !name.is_empty() {
                     entries.push(S3Entry {
                         name: name.to_string(),
@@ -94,9 +125,7 @@ pub async fn list_objects(
                         dt.fmt(aws_sdk_s3::primitives::DateTimeFormat::DateTime)
                             .unwrap_or_default()
                     });
-                    let storage_class = obj
-                        .storage_class()
-                        .map(|sc| sc.as_str().to_string());
+                    let storage_class = obj.storage_class().map(|sc| sc.as_str().to_string());
                     let e_tag = obj.e_tag().map(|s| s.trim_matches('"').to_string());
 
                     entries.push(S3Entry {
@@ -122,11 +151,7 @@ pub async fn list_objects(
     Ok(entries)
 }
 
-pub async fn get_object_bytes(
-    client: &Client,
-    bucket: &str,
-    key: &str,
-) -> Result<Vec<u8>, String> {
+pub async fn get_object_bytes(client: &Client, bucket: &str, key: &str) -> Result<Vec<u8>, String> {
     let resp = client
         .get_object()
         .bucket(bucket)
@@ -247,17 +272,97 @@ pub async fn upload_file(
 }
 
 const TEXT_EXTENSIONS: &[&str] = &[
-    "txt", "json", "yaml", "yml", "xml", "csv", "tsv", "md", "markdown",
-    "html", "htm", "css", "js", "ts", "jsx", "tsx", "py", "rb", "rs",
-    "go", "java", "c", "h", "cpp", "hpp", "cs", "sh", "bash", "zsh",
-    "fish", "toml", "ini", "cfg", "conf", "properties", "env", "log",
-    "sql", "graphql", "gql", "proto", "tf", "hcl", "lua", "pl", "pm",
-    "r", "scala", "kt", "kts", "swift", "m", "mm", "zig", "nim", "ex",
-    "exs", "erl", "hrl", "hs", "ml", "mli", "lisp", "cl", "el", "clj",
-    "cljs", "cljc", "edn", "svelte", "vue", "php", "twig", "erb",
-    "haml", "slim", "pug", "jade", "sass", "scss", "less", "styl",
-    "dockerfile", "makefile", "cmake", "gitignore", "gitattributes",
-    "editorconfig", "prettierrc", "eslintrc", "babelrc",
+    "txt",
+    "json",
+    "yaml",
+    "yml",
+    "xml",
+    "csv",
+    "tsv",
+    "md",
+    "markdown",
+    "html",
+    "htm",
+    "css",
+    "js",
+    "ts",
+    "jsx",
+    "tsx",
+    "py",
+    "rb",
+    "rs",
+    "go",
+    "java",
+    "c",
+    "h",
+    "cpp",
+    "hpp",
+    "cs",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "toml",
+    "ini",
+    "cfg",
+    "conf",
+    "properties",
+    "env",
+    "log",
+    "sql",
+    "graphql",
+    "gql",
+    "proto",
+    "tf",
+    "hcl",
+    "lua",
+    "pl",
+    "pm",
+    "r",
+    "scala",
+    "kt",
+    "kts",
+    "swift",
+    "m",
+    "mm",
+    "zig",
+    "nim",
+    "ex",
+    "exs",
+    "erl",
+    "hrl",
+    "hs",
+    "ml",
+    "mli",
+    "lisp",
+    "cl",
+    "el",
+    "clj",
+    "cljs",
+    "cljc",
+    "edn",
+    "svelte",
+    "vue",
+    "php",
+    "twig",
+    "erb",
+    "haml",
+    "slim",
+    "pug",
+    "jade",
+    "sass",
+    "scss",
+    "less",
+    "styl",
+    "dockerfile",
+    "makefile",
+    "cmake",
+    "gitignore",
+    "gitattributes",
+    "editorconfig",
+    "prettierrc",
+    "eslintrc",
+    "babelrc",
 ];
 
 pub fn is_text_file(name: &str) -> bool {
@@ -286,4 +391,56 @@ pub struct S3Entry {
     pub last_modified: Option<String>,
     pub storage_class: Option<String>,
     pub e_tag: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Args;
+    use crate::config::SavedProfile;
+
+    #[test]
+    fn connection_params_from_profile_maps_fields() {
+        let p = SavedProfile {
+            name: "x".into(),
+            profile: Some("prod".into()),
+            region: Some("eu-west-1".into()),
+            endpoint_url: None,
+            bucket: Some("b".into()),
+        };
+        let c = ConnectionParams::from_profile(&p);
+        assert_eq!(c.profile.as_deref(), Some("prod"));
+        assert_eq!(c.region.as_deref(), Some("eu-west-1"));
+        assert_eq!(c.endpoint_url, None);
+    }
+
+    #[test]
+    fn connection_params_from_args_maps_fields() {
+        let args = Args {
+            region: Some("us-east-1".into()),
+            profile: Some("dev".into()),
+            endpoint_url: Some("http://localhost:9000".into()),
+            bucket: Some("ignored".into()),
+        };
+        let c = ConnectionParams::from_args(&args);
+        assert_eq!(c.profile.as_deref(), Some("dev"));
+        assert_eq!(c.region.as_deref(), Some("us-east-1"));
+        assert_eq!(c.endpoint_url.as_deref(), Some("http://localhost:9000"));
+    }
+
+    #[test]
+    fn summary_uses_values_when_present() {
+        let c = ConnectionParams {
+            profile: Some("dev".into()),
+            region: Some("eu-west-1".into()),
+            endpoint_url: Some("http://localhost:9000".into()),
+        };
+        assert_eq!(c.summary(), "http://localhost:9000 · eu-west-1 · dev");
+    }
+
+    #[test]
+    fn summary_falls_back_to_defaults_when_absent() {
+        let c = ConnectionParams::default();
+        assert_eq!(c.summary(), "AWS · default · default");
+    }
 }
