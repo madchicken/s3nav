@@ -523,6 +523,24 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         return;
     }
 
+    if app.quit_pending {
+        let prompt = Paragraph::new(Line::from(vec![
+            Span::styled(
+                " Quit s3nav? ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "y",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" confirm  "),
+            Span::styled("any key", Style::default().fg(Color::Cyan)),
+            Span::raw(" cancel"),
+        ]));
+        frame.render_widget(prompt, area);
+        return;
+    }
+
     if app.view == View::CreateFolder {
         let prompt = Paragraph::new(Line::from(vec![
             Span::styled(
@@ -649,7 +667,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(" delete  "),
             Span::styled("r", Style::default().fg(Color::Cyan)),
             Span::raw(" refresh  "),
-            Span::styled("h", Style::default().fg(Color::Cyan)),
+            Span::styled("Esc/h", Style::default().fg(Color::Cyan)),
             Span::raw(" back  "),
             Span::styled("q", Style::default().fg(Color::Cyan)),
             Span::raw(" quit"),

@@ -67,6 +67,8 @@ pub struct App<'a> {
     pub configs: Vec<SavedProfile>,
     pub connection: ConnectionParams,
     pub config_delete_pending: bool,
+    /// True while a quit confirmation is pending in the bucket/objects list.
+    pub quit_pending: bool,
     pub config_form: ConfigForm,
     pub config_form_origin: View,
     /// When editing an existing config, its index in `configs`; `None` for a new config.
@@ -276,6 +278,7 @@ impl<'a> App<'a> {
             configs,
             connection,
             config_delete_pending: false,
+            quit_pending: false,
             config_form: ConfigForm::default(),
             config_form_origin: View::ConfigSelector,
             config_form_edit_index: None,
@@ -555,8 +558,16 @@ impl<'a> App<'a> {
         code: KeyCode,
         terminal: &mut DefaultTerminal,
     ) -> Result<()> {
+        if self.quit_pending {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => self.should_exit = true,
+                _ => self.quit_pending = false,
+            }
+            return Ok(());
+        }
         match code {
-            KeyCode::Char('q') | KeyCode::Esc => self.go_back_or_quit(),
+            KeyCode::Char('q') => self.should_exit = true,
+            KeyCode::Esc => self.esc_back(terminal).await?,
             KeyCode::Down | KeyCode::Char('j') => self.select_next(),
             KeyCode::Up | KeyCode::Char('k') => self.select_previous(),
             KeyCode::Home | KeyCode::Char('g') => self.select_first(),
@@ -752,13 +763,20 @@ impl<'a> App<'a> {
         Ok(())
     }
 
-    fn go_back_or_quit(&mut self) {
-        if self.view == View::Buckets {
-            self.should_exit = true;
+    /// Esc navigates back one folder level; at the bucket root (or in the
+    /// bucket list) it asks for confirmation before quitting.
+    async fn esc_back(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        match self.view {
+            View::Objects if self.prefix_stack.len() > 1 => {
+                self.prefix_stack.pop();
+                self.load_objects(terminal).await?;
+            }
+            View::Objects | View::Buckets => {
+                self.quit_pending = true;
+            }
+            _ => {}
         }
-        if self.view == View::Objects {
-            self.should_exit = true;
-        }
+        Ok(())
     }
 
     fn select_next(&mut self) {
