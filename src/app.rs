@@ -11,7 +11,7 @@ use crate::config::{self, SavedProfile};
 use crate::s3::{self, ConnectionParams, S3Entry};
 use crate::ui;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Buckets,
     Objects,
@@ -51,6 +51,11 @@ pub struct App<'a> {
     pub download_input: String,
     pub download_key: String,
     pub download_name: String,
+    /// True when the pending download targets a folder (prefix) to fetch
+    /// recursively rather than a single object.
+    pub download_is_dir: bool,
+    /// View to return to when the download prompt is dismissed or completes.
+    pub download_origin: View,
     // Delete confirm state
     pub delete_target_name: String,
     pub delete_target_key: String,
@@ -267,6 +272,8 @@ impl<'a> App<'a> {
             download_input: String::new(),
             download_key: String::new(),
             download_name: String::new(),
+            download_is_dir: false,
+            download_origin: View::Objects,
             delete_target_name: String::new(),
             delete_target_key: String::new(),
             delete_is_dir: false,
@@ -378,7 +385,7 @@ impl<'a> App<'a> {
                 self.config_form.clear();
                 self.error = None;
                 self.config_form_edit_index = None;
-                self.view = self.config_form_origin.clone();
+                self.view = self.config_form_origin;
             }
             KeyCode::Tab | KeyCode::Down => self.config_form.next_field(),
             KeyCode::BackTab | KeyCode::Up => self.config_form.prev_field(),
@@ -431,7 +438,7 @@ impl<'a> App<'a> {
                 self.error = Some(format!("Saved config {}", profile.name));
                 self.config_form.clear();
                 self.config_form_edit_index = None;
-                self.view = self.config_form_origin.clone();
+                self.view = self.config_form_origin;
                 if self.config_form_origin == View::ConfigSelector
                     && let Some(i) = self.configs.iter().position(|p| p.name == profile.name)
                 {
@@ -609,6 +616,11 @@ impl<'a> App<'a> {
                     self.open_file_picker();
                 }
             }
+            KeyCode::Char('D') => {
+                if self.view == View::Objects {
+                    self.prompt_download_selected();
+                }
+            }
             KeyCode::Char('r') => match self.view {
                 View::Objects => self.load_objects(terminal).await?,
                 View::Buckets => self.load_buckets(terminal).await?,
@@ -623,6 +635,11 @@ impl<'a> App<'a> {
         match code {
             KeyCode::Char('e') => {
                 self.open_editor_from_preview();
+            }
+            KeyCode::Char('D') => {
+                let key = format!("{}{}", self.current_prefix(), self.preview_name);
+                let name = self.preview_name.clone();
+                self.open_download_prompt(key, name, false);
             }
             KeyCode::Char('q')
             | KeyCode::Esc
@@ -724,7 +741,7 @@ impl<'a> App<'a> {
     ) -> Result<()> {
         match code {
             KeyCode::Esc => {
-                self.view = View::Objects;
+                self.view = self.download_origin;
                 self.download_input.clear();
             }
             KeyCode::Enter => {
@@ -739,16 +756,28 @@ impl<'a> App<'a> {
                 let key = self.download_key.clone();
 
                 self.loading = true;
-                self.view = View::Objects;
+                self.view = self.download_origin;
                 terminal.draw(|frame| ui::draw(frame, self))?;
 
-                match s3::download_object(&self.client, &self.current_bucket, &key, &dest).await {
-                    Ok(()) => {
-                        self.error = None;
-                        self.download_input.clear();
-                        self.error = Some(format!("Downloaded to {}", dest.display()));
+                if self.download_is_dir {
+                    match s3::download_prefix(&self.client, &self.current_bucket, &key, &dest).await
+                    {
+                        Ok(count) => {
+                            self.download_input.clear();
+                            self.error =
+                                Some(format!("Downloaded {count} files to {}", dest.display()));
+                        }
+                        Err(e) => self.error = Some(e),
                     }
-                    Err(e) => self.error = Some(e),
+                } else {
+                    match s3::download_object(&self.client, &self.current_bucket, &key, &dest).await
+                    {
+                        Ok(()) => {
+                            self.download_input.clear();
+                            self.error = Some(format!("Downloaded to {}", dest.display()));
+                        }
+                        Err(e) => self.error = Some(e),
+                    }
                 }
                 self.loading = false;
             }
@@ -835,7 +864,7 @@ impl<'a> App<'a> {
                     if s3::is_text_file(&entry.name) {
                         self.open_preview(&key, &entry.name, terminal).await?;
                     } else {
-                        self.open_download_prompt(key, entry.name);
+                        self.open_download_prompt(key, entry.name, false);
                     }
                 }
             }
@@ -866,10 +895,30 @@ impl<'a> App<'a> {
         Ok(())
     }
 
-    fn open_download_prompt(&mut self, key: String, name: String) {
+    /// Open the download prompt for the currently selected Objects entry,
+    /// handling both files and folders (recursive download).
+    fn prompt_download_selected(&mut self) {
+        let Some(selected) = self.list_state.selected() else {
+            return;
+        };
+        let Some(entry) = self.entries.get(selected).cloned() else {
+            return;
+        };
+        if entry.is_dir {
+            let key = format!("{}{}/", self.current_prefix(), entry.name);
+            self.open_download_prompt(key, entry.name, true);
+        } else {
+            let key = format!("{}{}", self.current_prefix(), entry.name);
+            self.open_download_prompt(key, entry.name, false);
+        }
+    }
+
+    fn open_download_prompt(&mut self, key: String, name: String, is_dir: bool) {
         self.download_key = key;
         self.download_name = name;
+        self.download_is_dir = is_dir;
         self.download_input.clear();
+        self.download_origin = self.view;
         self.view = View::DownloadPrompt;
     }
 

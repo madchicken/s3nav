@@ -582,19 +582,26 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
 
     if app.view == View::DownloadPrompt {
+        let label = if app.download_is_dir {
+            " Save folder into: "
+        } else {
+            " Save to: "
+        };
+        let default_hint = if app.download_is_dir {
+            format!("  (default: ~/Downloads/, folder {}/) ", app.download_name)
+        } else {
+            format!("  (default: ~/Downloads/{}) ", app.download_name)
+        };
         let prompt = Paragraph::new(Line::from(vec![
             Span::styled(
-                " Save to: ",
+                label,
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(&app.download_input),
             Span::styled("█", Style::default().fg(Color::White)),
-            Span::styled(
-                format!("  (default: ~/Downloads/{}) ", app.download_name),
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(default_hint, Style::default().fg(Color::DarkGray)),
             Span::styled("Esc", Style::default().fg(Color::Cyan)),
             Span::raw(" cancel"),
         ]));
@@ -603,7 +610,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
 
     if let Some(msg) = &app.error {
-        let is_success = msg.starts_with("Downloaded to")
+        let is_success = msg.starts_with("Downloaded ")
             || msg.starts_with("Saved ")
             || msg.starts_with("Deleted ")
             || msg.starts_with("Created ")
@@ -631,6 +638,8 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(" top  "),
             Span::styled("e", Style::default().fg(Color::Cyan)),
             Span::raw(" edit  "),
+            Span::styled("D", Style::default().fg(Color::Cyan)),
+            Span::raw(" download  "),
             Span::styled("q/Esc/h", Style::default().fg(Color::Cyan)),
             Span::raw(" back"),
         ])),
@@ -663,6 +672,8 @@ fn draw_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(" new file  "),
             Span::styled("u", Style::default().fg(Color::Cyan)),
             Span::raw(" upload  "),
+            Span::styled("D", Style::default().fg(Color::Cyan)),
+            Span::raw(" download  "),
             Span::styled("d", Style::default().fg(Color::Cyan)),
             Span::raw(" delete  "),
             Span::styled("r", Style::default().fg(Color::Cyan)),

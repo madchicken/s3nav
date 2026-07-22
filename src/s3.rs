@@ -181,6 +181,69 @@ pub async fn download_object(
     Ok(())
 }
 
+/// Path of `key` relative to `prefix`, or `None` when `key` is a "directory"
+/// placeholder — the prefix itself or any key ending in `/`, which have no
+/// local file to write.
+fn relative_key(prefix: &str, key: &str) -> Option<String> {
+    let rel = key.strip_prefix(prefix).unwrap_or(key);
+    if rel.is_empty() || rel.ends_with('/') {
+        return None;
+    }
+    Some(rel.to_string())
+}
+
+/// Recursively download every object under a prefix (i.e. a "folder") into
+/// `dest_root`, recreating the subdirectory structure. Returns the number of
+/// files written.
+pub async fn download_prefix(
+    client: &Client,
+    bucket: &str,
+    prefix: &str,
+    dest_root: &Path,
+) -> Result<u32, String> {
+    let mut downloaded = 0u32;
+    let mut continuation_token: Option<String> = None;
+
+    loop {
+        let mut req = client.list_objects_v2().bucket(bucket).prefix(prefix);
+        if let Some(token) = continuation_token {
+            req = req.continuation_token(token);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("Failed to list objects for download: {e}"))?;
+
+        for obj in resp.contents() {
+            let Some(key) = obj.key() else { continue };
+            let Some(rel) = relative_key(prefix, key) else {
+                continue;
+            };
+            let mut dest = dest_root.to_path_buf();
+            for part in rel.split('/') {
+                dest.push(part);
+            }
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
+            }
+            let bytes = get_object_bytes(client, bucket, key).await?;
+            std::fs::write(&dest, &bytes)
+                .map_err(|e| format!("Failed to write {}: {e}", dest.display()))?;
+            downloaded += 1;
+        }
+
+        if resp.is_truncated() == Some(true) {
+            continuation_token = resp.next_continuation_token().map(String::from);
+        } else {
+            break;
+        }
+    }
+
+    Ok(downloaded)
+}
+
 pub async fn put_object(
     client: &Client,
     bucket: &str,
@@ -442,5 +505,23 @@ mod tests {
     fn summary_falls_back_to_defaults_when_absent() {
         let c = ConnectionParams::default();
         assert_eq!(c.summary(), "AWS · default · default");
+    }
+
+    #[test]
+    fn relative_key_strips_prefix_and_skips_markers() {
+        // Folder marker equal to the prefix has no file to write.
+        assert_eq!(relative_key("foo/bar/", "foo/bar/"), None);
+        // A nested "directory" placeholder is skipped too.
+        assert_eq!(relative_key("foo/bar/", "foo/bar/baz/"), None);
+        // A file directly in the folder keeps just its name.
+        assert_eq!(
+            relative_key("foo/bar/", "foo/bar/file.txt").as_deref(),
+            Some("file.txt")
+        );
+        // A nested file keeps its relative subpath.
+        assert_eq!(
+            relative_key("foo/bar/", "foo/bar/baz/x.txt").as_deref(),
+            Some("baz/x.txt")
+        );
     }
 }
